@@ -1,16 +1,16 @@
 # image-crop-retrieval
 
-Streamlit application for **SSL-based image crop retrieval**.
+Streamlit-приложение для **SSL-поиска похожих кропов**.
 
-Upload an image, draw a bounding box, and the app finds the top-K most visually
-similar bounding boxes from a pre-indexed dataset using cosine similarity search
-over SSL embeddings.
+Загрузите изображение, нарисуйте рамку — и приложение найдёт топ-K наиболее
+визуально похожих bounding-box'ов из предварительно проиндексированного датасета,
+используя косинусное сходство по SSL-эмбеддингам.
 
 ---
 
-## Quick start
+## Быстрый старт
 
-### 1. Create the virtual environment
+### 1. Создание виртуального окружения
 
 ```bash
 uv venv --python 3.11
@@ -18,28 +18,28 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 uv sync --all-groups
 ```
 
-### 2. Build a dataset index (one-time / cron job)
+### 2. Построение индекса датасета (разово / cron-задача)
 
-Your annotations file must be a CSV or Parquet with at least these columns:
+Файл аннотаций должен быть CSV или Parquet и содержать как минимум следующие колонки:
 
-| column | description |
-|--------|-------------|
-| `image_path` | Path to the image **relative to `--images-root`** |
-| `x1`, `y1` | Top-left corner of the bounding box (pixels) |
-| `x2`, `y2` | Bottom-right corner of the bounding box (pixels) |
+| колонка | описание |
+|---------|----------|
+| `image_path` | Путь к изображению **относительно `--images-root`** |
+| `x1`, `y1` | Левый верхний угол bounding-box (пикселей) |
+| `x2`, `y2` | Правый нижний угол bounding-box (пикселей) |
 
 ```bash
-uv run python scripts/build_index.py \
+uv run python scripts/build_index.py local \
     --annotations /data/boxes.csv \
     --images-root /data/images/ \
     --checkpoint  /models/encoder.pth \
     --dataset-name my_dataset
 ```
 
-For **state-dict** checkpoints (requires the model class to be importable):
+Для **state-dict** чекпоинтов (класс модели должен быть импортируемым):
 
 ```bash
-uv run python scripts/build_index.py \
+uv run python scripts/build_index.py local \
     --annotations /data/boxes.parquet \
     --images-root /data/images/ \
     --checkpoint  /models/weights.pt \
@@ -47,57 +47,62 @@ uv run python scripts/build_index.py \
     --dataset-name my_dataset
 ```
 
-All options:
+Все параметры:
 
 ```
---annotations   FILE      CSV or Parquet annotations file  [required]
---images-root   DIR       Root directory for images         [required]
---checkpoint    FILE      Path to .pt / .pth checkpoint     [required]
---dataset-name  NAME      Output sub-directory name         [required]
---model-module  MOD:CLS   module.path:ClassName for state-dict mode
---datasets-dir  DIR       Root datasets dir  (default: datasets/)
---batch-size    N         Embedding batch size  (default: 64)
---device        STR       PyTorch device  (default: cpu)
---input-size    H W       Resize crops to H×W before the model  (default: 224 224)
+--annotations   FILE      CSV или Parquet с аннотациями          [обязательно]
+--images-root   DIR       Корневая директория изображений         [обязательно]
+--checkpoint    FILE      Путь к чекпоинту .pt / .pth            [обязательно]
+--dataset-name  NAME      Имя выходной поддиректории              [обязательно]
+--model-module  MOD:CLS   module.path:ClassName для state-dict
+--datasets-dir  DIR       Корень датасетов  (по умолч.: datasets/)
+--batch-size    N         Размер батча эмбеддинга  (по умолч.: 64)
+--device        STR       Устройство PyTorch  (по умолч.: cpu)
+--input-size    H W       Размер кропа для модели  (по умолч.: 224 224)
 ```
 
-### 3. Run the Streamlit app
+### 3. Запуск приложения
 
 ```bash
 uv run streamlit run app.py
 ```
 
-Open [http://localhost:8501](http://localhost:8501) in your browser.
+Откройте [http://localhost:8501](http://localhost:8501) в браузере.
 
-Optional environment variables:
+Необязательные переменные среды:
 
-| variable | default | description |
-|----------|---------|-------------|
-| `DATASETS_DIR` | `datasets/` | Path to the datasets directory |
-| `TOP_K` | `10` | Default number of search results |
-| `DEVICE` | `cpu` | PyTorch device |
-| `MODEL_PATH` | _(empty)_ | Pre-fill the model path field |
+| переменная | по умолчанию | описание |
+|------------|--------------|----------|
+| `DATASETS_DIR` | `datasets/` | Путь к директории датасетов |
+| `TOP_K` | `10` | Количество результатов по умолчанию |
+| `DEVICE` | `cpu` | Устройство PyTorch |
+| `MODEL_PATH` | _(пусто)_ | Предзаполнить поле пути к модели |
 
 ---
 
-## Project structure
+## Структура проекта
 
 ```
 image-crop-retrieval/
-├── app.py                              # Streamlit entry point
-├── pyproject.toml                      # uv project config, ruff, mypy
+├── app.py                              # Точка входа Streamlit (навигация)
+├── pyproject.toml                      # Конфигурация uv, ruff, mypy
 ├── scripts/
-│   └── build_index.py                  # Offline indexing CLI
+│   └── build_index.py                  # CLI для офлайн-индексации
 ├── src/
-│   └── image_retrieval/
-│       ├── config.py                   # AppConfig, DatasetMeta
-│       ├── embedder.py                 # EmbedderProtocol, TorchEmbedder
-│       ├── indexer.py                  # FAISSIndex, SearchResult
-│       ├── registry.py                 # DatasetRegistry
-│       └── ui/
-│           ├── crop_selector.py        # Upload + canvas crop widget
-│           └── results_viewer.py       # Top-K results grid
-└── datasets/                           # Created by build_index.py
+│   ├── image_retrieval/
+│   │   ├── config.py                   # AppConfig, DatasetMeta
+│   │   ├── embedder.py                 # EmbedderProtocol, TorchEmbedder
+│   │   ├── indexer.py                  # FAISSIndex, SearchResult
+│   │   ├── registry.py                 # DatasetRegistry, S3DatasetRegistry
+│   │   ├── s3_client.py                # S3Client (boto3-обёртка)
+│   │   ├── cvat_client.py              # CVATClient (REST API 2.x)
+│   │   └── ui/
+│   │       ├── crop_selector.py        # Виджет загрузки + выбора кропа
+│   │       ├── results_viewer.py       # Сетка топ-K результатов
+│   │       └── cvat_exporter.py        # Панель экспорта в CVAT
+│   └── pages/
+│       └── image_retrieval.py          # Логика страницы поиска
+└── datasets/                           # Создаётся build_index.py
     └── {dataset_name}/
         ├── index.faiss
         ├── metadata.parquet
@@ -106,33 +111,77 @@ image-crop-retrieval/
 
 ---
 
-## Model requirements
+## Требования к модели
 
-Your SSL model must:
+SSL-модель должна:
 
-1. Accept a float tensor of shape `(N, 3, H, W)` (standard ImageNet normalisation is applied automatically).
-2. Return a float tensor of shape `(N, D)` — embedding vectors.  
-   Spatial outputs `(N, C, H, W)` are flattened automatically.
+1. Принимать float-тензор формы `(N, 3, H, W)` (нормализация ImageNet применяется автоматически).
+2. Возвращать float-тензор формы `(N, D)` — векторы эмбеддингов.  
+   Пространственные выходы `(N, C, H, W)` выравниваются автоматически.
 
-The model checkpoint can be:
+Чекпоинт модели может быть:
 
-- **Full-model pickle** (`torch.save(model, path)`) — just pass `--checkpoint`.
-- **State-dict** (`torch.save(model.state_dict(), path)`) — also pass `--model-module module.path:ClassName`.
+- **Полная модель (pickle)** (`torch.save(model, path)`) — достаточно `--checkpoint`.
+- **State-dict** (`torch.save(model.state_dict(), path)`) — также укажите `--model-module module.path:ClassName`.
 
-> ⚠️ **Security**: `torch.load(weights_only=False)` executes arbitrary pickle code.  
-> Only load checkpoints from trusted sources.
+> ⚠️ **Безопасность**: `torch.load(weights_only=False)` выполняет произвольный pickle-код.  
+> Загружайте чекпоинты только из **доверенных источников**.
 
 ---
 
-## Development
+## S3-режим
+
+Для работы с S3 укажите переменные среды или добавьте блок `s3:` в `config.yaml`:
 
 ```bash
-# Lint
+S3_BUCKET=my-bucket
+S3_PREFIX=datasets/          # необязательный префикс
+S3_REGION=us-east-1
+S3_ENDPOINT_URL=http://localhost:9000   # MinIO / Yandex Cloud
+```
+
+Построение индекса в S3:
+
+```bash
+uv run python scripts/build_index.py s3 \
+    --bucket    my-bucket \
+    --dataset   my_dataset \
+    --checkpoint /models/encoder.pth
+```
+
+Индексы датасетов и модель кэшируются локально и **обновляются каждые 10 минут**:
+при истечении TTL приложение проверяет S3 и перескачивает файл только если версия на S3 новее.
+
+---
+
+## CVAT-экспорт
+
+Добавьте блок `cvat:` в `config.yaml`:
+
+```yaml
+cvat:
+  url: https://cvat.example.com
+  token: my-api-token      # предпочтительнее username/password
+  project_id: 42           # необязательно
+  task_label: crop         # по умолчанию
+```
+
+При наличии конфигурации под сеткой результатов появляется панель экспорта в CVAT.
+
+---
+
+## Разработка
+
+```bash
+# Линтер
 uv run ruff check src/ app.py scripts/
 
-# Type check
+# Проверка типов
 uv run mypy src/ app.py scripts/
 
-# Auto-fix lint issues
+# Автофикс
 uv run ruff check --fix src/ app.py scripts/
+
+# Тесты
+uv run pytest
 ```
