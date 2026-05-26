@@ -106,7 +106,7 @@ class TestTorchEmbedderEmbed:
         )
 
     def test_empty_crops_raises(self, embedder: TorchEmbedder) -> None:
-        with pytest.raises(ValueError, match="non-empty"):
+        with pytest.raises(ValueError, match="non-empty|непустым"):
             embedder.embed([])
 
     def test_grayscale_image_converted(self, embedder: TorchEmbedder) -> None:

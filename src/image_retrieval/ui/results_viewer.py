@@ -1,18 +1,20 @@
-"""Streamlit results grid: display top-K retrieved bounding-box crops.
+"""Сетка результатов Streamlit: отображение топ-K найденных bounding-box кропов.
 
-Each cell shows the cropped image patch, cosine-similarity score, bounding-box
-coordinates, source filename, and a **checkbox** for multi-selection.
+Каждая ячейка показывает вырезанный фрагмент изображения, оценку косинусного
+сходства, координаты bounding-box, имя файла и **чекбокс** для множественного
+выбора.
 
-Selected results are stored in ``st.session_state["selected_box_ids"]``
-(a ``set[str]``).  The CVAT export panel in
-:mod:`image_retrieval.ui.cvat_exporter` reads this set to determine which
-crops to export.
+Выбранные результаты хранятся в ``st.session_state["selected_box_ids"]``
+(``set[str]``).  Панель экспорта CVAT в
+:mod:`image_retrieval.ui.cvat_exporter` читает этот набор для определения
+кропов к экспорту.
 
-Images are loaded from the local filesystem by default.  When *s3_client* is
-passed and an image path starts with ``s3://``, the image is fetched from S3.
+Изображения по умолчанию загружаются из локальной файловой системы.  Если
+передан *s3_client* и путь к изображению начинается с ``s3://`` — изображение
+загружается из S3.
 
-Individual image-load failures are shown as error tiles so the rest of the
-grid continues to render normally.
+Ошибки загрузки отдельных изображений отображаются как плитки с ошибкой,
+остальные ячейки сетки продолжают отрисовываться нормально.
 """
 
 from __future__ import annotations
@@ -32,12 +34,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Session-state key that holds the set of selected box IDs.
+# Ключ session_state, хранящий набор выбранных box ID
 _SELECTED_KEY = "selected_box_ids"
 
 
 def get_selected_box_ids() -> set[str]:
-    """Return the current selection set, initialising it if absent."""
+    """Возвращает текущий набор выбранных ID, инициализируя его при отсутствии."""
     if _SELECTED_KEY not in st.session_state:
         st.session_state[_SELECTED_KEY] = set()
     return st.session_state[_SELECTED_KEY]  # type: ignore[no-any-return]
@@ -49,22 +51,23 @@ def render_results(
     config: AppBlock,
     s3_client: S3Client | None = None,
 ) -> None:
-    """Render *results* as a responsive grid of cropped images with checkboxes.
+    """Отображает *results* как адаптивную сетку кропов с чекбоксами.
 
-    Each cell has a checkbox for multi-selection.  Selected items accumulate
-    in ``st.session_state["selected_box_ids"]`` and persist across reruns.
-    A **Clear selection** button resets the set.
+    Каждая ячейка содержит чекбокс для множественного выбора.  Выбранные
+    элементы накапливаются в ``st.session_state["selected_box_ids"]`` и
+    сохраняются между перезапусками.  Кнопка **Снять выбор** сбрасывает набор.
 
     Args:
-        results: Ordered list (best match first) from :meth:`FAISSIndex.search`.
-        images_root: Base directory for resolving local ``image_path`` values.
-            Ignored when *s3_client* is provided and paths start with ``s3://``.
-        config: Application configuration; ``results_columns`` is used.
-        s3_client: Optional S3 client.  When provided, image paths that start
-            with ``s3://`` are loaded from S3 instead of the local filesystem.
+        results: Упорядоченный список (лучшее совпадение первым) из
+            :meth:`FAISSIndex.search`.
+        images_root: Базовая директория для разрешения локальных ``image_path``.
+            Игнорируется если *s3_client* задан и пути начинаются с ``s3://``.
+        config: Конфигурация приложения; используется ``results_columns``.
+        s3_client: Необязательный S3-клиент.  При наличии пути, начинающиеся
+            с ``s3://``, загружаются из S3 вместо локальной файловой системы.
     """
     if not results:
-        st.warning("No results found.")
+        st.warning("Результаты не найдены.")
         return
 
     selected = get_selected_box_ids()
@@ -72,14 +75,14 @@ def render_results(
     hdr_col, clear_col = st.columns([6, 1])
     with hdr_col:
         n_sel = len(selected)
-        label = f"Top {len(results)} results"
+        label = f"Топ {len(results)} результатов"
         if n_sel:
-            label += f"  ·  **{n_sel} selected**"
+            label += f"  ·  **{n_sel} выбрано**"
         st.subheader(label)
     with clear_col:
         if selected and st.button(
-            "✖ Clear",
-            help="Deselect all results.",
+            "✖ Сбросить",
+            help="Снять выбор со всех результатов.",
             use_container_width=True,
         ):
             st.session_state[_SELECTED_KEY] = set()
@@ -91,14 +94,13 @@ def render_results(
             _render_single_result(result, images_root, s3_client, selected)
 
 
-
 def _render_single_result(
     result: SearchResult,
     images_root: Path,
     s3_client: S3Client | None,
     selected: set[str],
 ) -> None:
-    """Render one result cell: checkbox + image + caption."""
+    """Отображает одну ячейку результата: чекбокс + изображение + подпись."""
     is_selected = result.box_id in selected
     checked = st.checkbox(
         label=result.box_id,
@@ -106,7 +108,7 @@ def _render_single_result(
         key=f"sel_{result.box_id}",
         label_visibility="collapsed",
     )
-    # Sync checkbox state back to the shared selection set
+    # Синхронизируем состояние чекбокса с общим набором выбранных
     if checked and not is_selected:
         selected.add(result.box_id)
     elif not checked and is_selected:
@@ -116,12 +118,12 @@ def _render_single_result(
     if crop is not None:
         st.image(crop, use_container_width=True)
     else:
-        st.error(f"⚠️ Image not found:\n`{result.image_path}`")
+        st.error(f"⚠️ Изображение не найдено:\n`{result.image_path}`")
 
     score_pct = result.score * 100
     st.caption(
-        f"**Score:** {score_pct:.1f}%  \n"
-        f"**Box:** [{result.x1}, {result.y1} – {result.x2}, {result.y2}]  \n"
+        f"**Сходство:** {score_pct:.1f}%  \n"
+        f"**Кроп:** [{result.x1}, {result.y1} – {result.x2}, {result.y2}]  \n"
         f"`{Path(result.image_path).name}`"
     )
 
@@ -131,15 +133,15 @@ def _load_crop(
     images_root: Path,
     s3_client: S3Client | None,
 ) -> PILImage.Image | None:
-    """Load and return the cropped region for *result*.
+    """Загружает и возвращает вырезанный фрагмент для *result*.
 
-    Routing logic:
-    1. If ``result.image_path`` starts with ``s3://`` **and** *s3_client* is
-       provided → fetch from S3.
-    2. Otherwise → resolve against *images_root* (or as an absolute path) and
-       load from local disk.
+    Логика маршрутизации:
+    1. Если ``result.image_path`` начинается с ``s3://`` **и** *s3_client* задан
+       → загрузка из S3.
+    2. Иначе → разрешается относительно *images_root* (или как абсолютный путь)
+       и загружается с локального диска.
 
-    Returns ``None`` on any failure so the grid cell degrades gracefully.
+    При любой ошибке возвращает ``None``, чтобы ячейка деградировала корректно.
     """
     try:
         if result.image_path.startswith("s3://") and s3_client is not None:
@@ -147,7 +149,7 @@ def _load_crop(
         return _load_crop_from_local(result, images_root)
     except Exception:
         logger.warning(
-            "Failed to load/crop image for box_id='%s' (path='%s').",
+            "Ошибка загрузки/вырезания изображения для box_id='%s' (path='%s').",
             result.box_id,
             result.image_path,
             exc_info=True,
@@ -159,13 +161,13 @@ def _load_crop_from_s3(
     result: SearchResult,
     s3_client: S3Client,
 ) -> PILImage.Image | None:
-    """Fetch image from S3 and return the cropped region."""
+    """Загружает изображение из S3 и возвращает вырезанный фрагмент."""
     try:
         img = s3_client.load_image(result.image_path)
         return img.crop((result.x1, result.y1, result.x2, result.y2))
     except Exception:
         logger.warning(
-            "S3 image load failed for box_id='%s', uri='%s'.",
+            "Ошибка загрузки S3-изображения для box_id='%s', uri='%s'.",
             result.box_id,
             result.image_path,
             exc_info=True,
@@ -177,7 +179,8 @@ def _load_crop_from_local(
     result: SearchResult,
     images_root: Path,
 ) -> PILImage.Image | None:
-    """Load image from the local filesystem and return the cropped region."""
+    """Загружает изображение из локальной файловой системы
+    и возвращает вырезанный фрагмент."""
     candidates = [
         images_root / result.image_path,
         Path(result.image_path),
@@ -189,7 +192,7 @@ def _load_crop_from_local(
                 return img.crop((result.x1, result.y1, result.x2, result.y2))
             except Exception:
                 logger.warning(
-                    "Failed to open/crop '%s' for box_id='%s'.",
+                    "Ошибка открытия/вырезания '%s' для box_id='%s'.",
                     path,
                     result.box_id,
                     exc_info=True,
@@ -197,7 +200,7 @@ def _load_crop_from_local(
                 return None
 
     logger.warning(
-        "Image not found for box_id='%s': tried %s",
+        "Изображение не найдено для box_id='%s': проверены %s",
         result.box_id,
         [str(p) for p in candidates],
     )

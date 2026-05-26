@@ -64,7 +64,7 @@ class TestFAISSIndexConstruction:
 
     def test_missing_metadata_file(self, tmp_path: Path) -> None:
         idx_path, _, _ = _write_dataset(tmp_path)
-        with pytest.raises(FileNotFoundError, match="Metadata"):
+        with pytest.raises(FileNotFoundError, match="[Mm]etadata|метаданные"):
             FAISSIndex(idx_path, tmp_path / "nonexistent.parquet")
 
     def test_missing_required_column(self, tmp_path: Path) -> None:
@@ -97,7 +97,7 @@ class TestFAISSIndexConstruction:
             }
         )
         bad_meta.to_parquet(meta_path, index=False)
-        with pytest.raises(ValueError, match="match"):
+        with pytest.raises(ValueError, match="match|совпадать"):
             FAISSIndex(idx_path, meta_path)
 
 
@@ -147,7 +147,7 @@ class TestFAISSIndexSearch:
     def test_bad_query_shape_raises(self, tmp_path: Path) -> None:
         fi = self._build(tmp_path)
         bad = np.ones((DIM,), dtype=np.float32)  # 1-D, not (1, D)
-        with pytest.raises(ValueError, match="shape"):
+        with pytest.raises(ValueError, match="shape|форму"):
             fi.search(bad, top_k=1)
 
     def test_top_k_zero_raises(self, tmp_path: Path) -> None:
@@ -167,7 +167,7 @@ class TestFAISSIndexSearch:
         meta.to_parquet(meta_path, index=False)
 
         fi = FAISSIndex(idx_path, meta_path)
-        with pytest.raises(ValueError, match="empty"):
+        with pytest.raises(ValueError, match="empty|пуст"):
             fi.search(np.ones((1, DIM), dtype=np.float32), top_k=1)
 
 

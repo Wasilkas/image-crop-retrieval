@@ -788,7 +788,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "python-consul2", specifier = ">=0.1.5" },
     { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "streamlit", specifier = ">=1.35" },
+    { name = "streamlit", specifier = ">=1.37" },
     { name = "streamlit-drawable-canvas", specifier = ">=0.9.3" },
     { name = "torch", specifier = ">=2.3" },
     { name = "torchvision", specifier = ">=0.18" },

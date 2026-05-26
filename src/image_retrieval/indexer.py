@@ -1,14 +1,14 @@
-"""FAISS index wrapper for cosine-similarity nearest-neighbour search.
+"""Обёртка над FAISS-индексом для поиска ближайших соседей по косинусному сходству.
 
-Design
+Дизайн
 ------
-We use ``faiss.IndexFlatIP`` (inner-product / dot-product index) together with
-**L2-normalised** embedding vectors.  For unit-norm vectors, inner product is
-mathematically equivalent to cosine similarity, so the scores returned are in
-the range ``[-1, 1]`` (higher = more similar).
+Используется ``faiss.IndexFlatIP`` (inner-product / dot-product индекс) совместно
+с **L2-нормализованными** векторами эмбеддингов.  Для единичных векторов inner
+product математически эквивалентен косинусному сходству, поэтому возвращаемые
+оценки находятся в диапазоне ``[-1, 1]`` (больше = более похоже).
 
-The index is **read-only** at app runtime.  Building and writing the index is
-handled entirely by ``scripts/build_index.py``.
+Индекс **только для чтения** во время работы приложения.  Построение и запись
+индекса полностью выполняются в ``scripts/build_index.py``.
 """
 
 from __future__ import annotations
@@ -23,18 +23,18 @@ import pandas as pd
 
 @dataclass(frozen=True)
 class SearchResult:
-    """A single retrieved bounding-box hit.
+    """Один найденный bounding-box.
 
-    Attributes:
-        box_id: Unique identifier for the bounding box (string).
-        image_path: Relative (or absolute) path to the source image as stored
-            in the metadata.  Resolve against ``DatasetMeta.images_root`` to
-            get the absolute path.
-        x1: Left edge of the bounding box (pixels).
-        y1: Top edge of the bounding box (pixels).
-        x2: Right edge of the bounding box (pixels).
-        y2: Bottom edge of the bounding box (pixels).
-        score: Cosine similarity score in ``[-1, 1]``; higher is more similar.
+    Атрибуты:
+        box_id: Уникальный идентификатор bounding-box (строка).
+        image_path: Относительный (или абсолютный) путь к исходному изображению
+            из метаданных.  Разрешается относительно ``DatasetMeta.images_root``
+            для получения абсолютного пути.
+        x1: Левый край bounding-box (пикселей).
+        y1: Верхний край bounding-box (пикселей).
+        x2: Правый край bounding-box (пикселей).
+        y2: Нижний край bounding-box (пикселей).
+        score: Оценка косинусного сходства в ``[-1, 1]``; больше = более похоже.
     """
 
     box_id: str
@@ -46,98 +46,98 @@ class SearchResult:
     score: float
 
 
-# Required columns in the metadata Parquet file.
+# Обязательные колонки в Parquet-файле метаданных.
 _REQUIRED_COLUMNS: frozenset[str] = frozenset(
     {"image_path", "x1", "y1", "x2", "y2", "box_id"}
 )
 
 
 class FAISSIndex:
-    """Wraps a pre-built ``faiss.IndexFlatIP`` for read-only nearest-neighbour search.
+    """Обёртка над предпостроенным ``faiss.IndexFlatIP`` для поиска ближайших соседей.
 
-    The index and metadata are loaded from disk once at construction and kept
-    in memory for the lifetime of the object.
+    Индекс и метаданные загружаются с диска один раз при создании объекта
+    и хранятся в памяти всё время жизни объекта.
 
     Args:
-        index_path: Absolute path to a ``*.faiss`` file written by
+        index_path: Абсолютный путь к ``*.faiss``-файлу, записанному через
             ``faiss.write_index()``.
-        metadata_path: Absolute path to the ``metadata.parquet`` file.
-            Must contain at minimum the columns: ``image_path``, ``x1``,
+        metadata_path: Абсолютный путь к файлу ``metadata.parquet``.
+            Должен содержать как минимум колонки: ``image_path``, ``x1``,
             ``y1``, ``x2``, ``y2``, ``box_id``.
 
     Raises:
-        FileNotFoundError: If either *index_path* or *metadata_path* is missing.
-        ValueError: If *metadata_path* is missing required columns, or if the
-            number of metadata rows does not match the number of index vectors.
+        FileNotFoundError: Если *index_path* или *metadata_path* не существует.
+        ValueError: Если в *metadata_path* отсутствуют обязательные колонки, или
+            количество строк метаданных не совпадает с количеством векторов индекса.
     """
 
     def __init__(self, index_path: Path, metadata_path: Path) -> None:
         if not index_path.exists():
-            raise FileNotFoundError(f"FAISS index not found: {index_path}")
+            raise FileNotFoundError(f"FAISS-индекс не найден: {index_path}")
         if not metadata_path.exists():
-            raise FileNotFoundError(f"Metadata Parquet not found: {metadata_path}")
+            raise FileNotFoundError(f"Parquet-метаданные не найдены: {metadata_path}")
 
-        # faiss.read_index returns faiss.Index (base class); narrowing to it is correct
+        # faiss.read_index возвращает faiss.Index (базовый класс) — корректное сужение
         self._index: faiss.Index = faiss.read_index(str(index_path))
         self._metadata: pd.DataFrame = pd.read_parquet(metadata_path)
 
         self._validate()
 
     def _validate(self) -> None:
-        """Check that required metadata columns exist and row counts match."""
+        """Проверяет наличие обязательных колонок и совпадение количества строк."""
         missing = _REQUIRED_COLUMNS - set(self._metadata.columns)
         if missing:
             raise ValueError(
-                f"Metadata is missing required columns: {sorted(missing)}"
+                f"В метаданных отсутствуют обязательные колонки: {sorted(missing)}"
             )
         if len(self._metadata) != self._index.ntotal:
             raise ValueError(
-                f"Metadata has {len(self._metadata)} rows but FAISS index has "
-                f"{self._index.ntotal} vectors — they must match."
+                f"Метаданные содержат {len(self._metadata)} строк, "
+                f"а FAISS-индекс — {self._index.ntotal} векторов: должны совпадать."
             )
 
     @property
     def ntotal(self) -> int:
-        """Number of vectors stored in the index."""
+        """Количество векторов в индексе."""
         return int(self._index.ntotal)
 
     @property
     def embedding_dim(self) -> int:
-        """Dimensionality of the stored embedding vectors."""
+        """Размерность хранимых векторов эмбеддингов."""
         return int(self._index.d)
 
     def search(self, query: np.ndarray, top_k: int) -> list[SearchResult]:
-        """Find the *top_k* most similar bounding boxes to *query*.
+        """Находит *top_k* наиболее похожих bounding-box'ов на *query*.
 
         Args:
-            query: Float32 ndarray of shape ``(1, D)`` — must be L2-normalised.
-            top_k: Number of results to return.  Automatically capped at
-                ``self.ntotal`` so as not to request more results than exist.
+            query: float32-ndarray формы ``(1, D)`` — должен быть L2-нормализован.
+            top_k: Количество результатов.  Автоматически ограничивается
+                ``self.ntotal``, чтобы не запрашивать больше, чем есть.
 
         Returns:
-            List of :class:`SearchResult` ordered by **descending** cosine
-            similarity (best match first).
+            Список :class:`SearchResult` в порядке убывания косинусного сходства
+            (лучшее совпадение первым).
 
         Raises:
-            ValueError: If *query* is not shape ``(1, D)``, or *top_k* < 1,
-                or the index is empty.
+            ValueError: Если *query* не имеет формы ``(1, D)``, *top_k* < 1,
+                или индекс пуст.
         """
         if query.ndim != 2 or query.shape[0] != 1:
             raise ValueError(
-                f"query must have shape (1, D), got {query.shape}"
+                f"query должен иметь форму (1, D), получено {query.shape}"
             )
         if top_k < 1:
-            raise ValueError("top_k must be at least 1")
+            raise ValueError("top_k должен быть не меньше 1")
         if self.ntotal == 0:
-            raise ValueError("The FAISS index is empty — run build_index.py first.")
+            raise ValueError("FAISS-индекс пуст — сначала запустите build_index.py.")
 
         k = min(top_k, self.ntotal)
         distances, indices = self._index.search(query.astype(np.float32), k)
-        # distances / indices have shape (1, k)
+        # distances / indices имеют форму (1, k)
 
         results: list[SearchResult] = []
         for dist, idx in zip(distances[0], indices[0], strict=True):
-            # FAISS returns index -1 when fewer results exist than requested
+            # FAISS возвращает индекс -1 если результатов меньше запрошенного
             if idx < 0:
                 continue
             row = self._metadata.iloc[int(idx)]

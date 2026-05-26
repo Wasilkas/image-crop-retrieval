@@ -1,20 +1,18 @@
-"""Application configuration — Pydantic v2 block-based design.
+"""Конфигурация приложения — блочный дизайн на Pydantic v2.
 
-One :class:`Configuration` object holds all subsystem blocks.  Each block is
-a frozen Pydantic model so fields are validated on construction and values are
-immutable after creation.
+Один объект :class:`Configuration` содержит все блоки подсистем.  Каждый блок —
+замороженная Pydantic-модель: поля валидируются при создании и неизменны после.
 
-Loading priority (highest → lowest):
+Приоритет загрузки (от высшего к низшему):
 
-1. **Consul KV** — if ``consul_url`` is provided (or ``CONSUL_URL`` env var)
-   and the server is reachable, the YAML stored at the configured key is
-   fetched and parsed.
-2. **YAML file** — ``config_path`` (or ``CONFIG_PATH`` env var, defaulting to
-   ``config.yaml`` in the working directory) if the file exists.
-3. **Built-in defaults** — all fields have sensible defaults; a
-   :class:`Configuration` with no arguments is fully usable.
+1. **Consul KV** — если ``consul_url`` задан (или переменная среды ``CONSUL_URL``)
+   и сервер доступен, из него читается YAML по указанному ключу.
+2. **YAML-файл** — ``config_path`` (или ``CONFIG_PATH``, по умолч. ``config.yaml``
+   в рабочей директории) если файл существует.
+3. **Встроенные умолчания** — у всех полей есть разумные значения; объект
+   :class:`Configuration` без аргументов полностью работоспособен.
 
-Example ``config.yaml``::
+Пример ``config.yaml``::
 
     app:
       top_k: 20
@@ -33,8 +31,8 @@ Example ``config.yaml``::
       token: my-api-token
       project_id: 42
 
-Backward-compatible aliases :data:`AppConfig` and :data:`S3Config` are
-provided so existing code continues to compile without changes.
+Обратно-совместимые псевдонимы :data:`AppConfig` и :data:`S3Config` сохранены,
+чтобы существующий код продолжал компилироваться без изменений.
 """
 
 from __future__ import annotations
@@ -51,22 +49,23 @@ logger = logging.getLogger(__name__)
 
 
 def _default_datasets_dir() -> Path:
-    """Return ``<project_root>/datasets`` as the default datasets directory."""
+    """Возвращает ``<корень_проекта>/datasets`` как директорию датасетов
+    по умолчанию."""
     return (Path(__file__).resolve().parents[3] / "datasets").resolve()
 
 
 class AppBlock(BaseModel):
-    """UI and runtime settings for the Streamlit application.
+    """Настройки UI и среды выполнения Streamlit-приложения.
 
-    Attributes:
-        datasets_dir: Directory containing one sub-folder per indexed dataset
-            (local mode only; ignored when :attr:`Configuration.s3` is set).
-        top_k: Default number of nearest-neighbour results to retrieve.
-        device: PyTorch device string (``"cpu"`` for CPU-only inference).
-        min_crop_px: Minimum side length (pixels) for a drawn crop to be valid.
-        canvas_width: Maximum display width of the drawable canvas (px).
-        canvas_height: Maximum display height of the drawable canvas (px).
-        results_columns: Number of columns in the results grid.
+    Атрибуты:
+        datasets_dir: Директория с поддиректориями-датасетами (только локальный
+            режим; игнорируется, если задан :attr:`Configuration.s3`).
+        top_k: Количество ближайших соседей для поиска по умолчанию.
+        device: Строка устройства PyTorch (``"cpu"`` для CPU-инференса).
+        min_crop_px: Минимальная сторона (в пикселях) нарисованного кропа.
+        canvas_width: Максимальная ширина холста для рисования (пкс).
+        canvas_height: Максимальная высота холста для рисования (пкс).
+        results_columns: Количество колонок в сетке результатов.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -86,17 +85,17 @@ class AppBlock(BaseModel):
 
 
 class S3Block(BaseModel):
-    """Connection parameters for an S3-compatible object store.
+    """Параметры подключения к S3-совместимому объектному хранилищу.
 
-    Attributes:
-        bucket: Name of the S3 bucket.
-        prefix: Key prefix under which all datasets live
-            (e.g. ``"datasets/"``).  May be empty for bucket-root access.
-        region: AWS region string (e.g. ``"us-east-1"``).
-        endpoint_url: Custom endpoint for S3-compatible stores (MinIO, Yandex
-            Cloud Object Storage, …).  ``None`` → use standard AWS endpoints.
-        check_interval_seconds: How often (seconds) the app polls S3 to detect
-            a new index.
+    Атрибуты:
+        bucket: Имя S3-бакета.
+        prefix: Префикс ключей, под которым хранятся все датасеты
+            (напр. ``"datasets/"``). Может быть пустым для доступа от корня бакета.
+        region: Строка региона AWS (напр. ``"us-east-1"``).
+        endpoint_url: Кастомный endpoint для S3-совместимых хранилищ (MinIO,
+            Yandex Cloud Object Storage и др.).  ``None`` → стандартные AWS-endpoint'ы.
+        check_interval_seconds: Как часто (в секундах) приложение опрашивает S3
+            для обнаружения нового индекса.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -108,24 +107,25 @@ class S3Block(BaseModel):
     check_interval_seconds: int = 300
 
     def dataset_prefix(self, dataset_name: str) -> str:
-        """Return the S3 key prefix for *dataset_name* (with trailing slash)."""
+        """Возвращает S3-префикс ключей датасета *dataset_name*
+        (с завершающим слэшем)."""
         base = self.prefix.rstrip("/")
         return f"{base}/{dataset_name}/" if base else f"{dataset_name}/"
 
 
 class EncoderBlock(BaseModel):
-    """Configuration for the SSL model used to embed image crops.
+    """Конфигурация SSL-модели для вычисления эмбеддингов кропов.
 
-    Attributes:
-        checkpoint: Path to the ``.pt`` / ``.pth`` checkpoint.  Accepts both
-            local filesystem paths and ``s3://bucket/key`` URIs.  When an S3
-            URI is given the file is downloaded to *cache_dir* on first use and
-            re-used on subsequent starts (unless the remote object is newer).
-        model_module: Optional ``"module.path:ClassName"`` for state-dict
-            checkpoints that need an explicit model class.  ``None`` → full
-            model pickle.
-        cache_dir: Directory for caching S3-downloaded model files.  Defaults
-            to ``<tmp>/image-retrieval-models/``.
+    Атрибуты:
+        checkpoint: Путь к чекпоинту ``.pt`` / ``.pth``.  Принимает как локальные
+            пути, так и ``s3://bucket/key``-URI.  При S3-URI файл скачивается
+            в *cache_dir* при первом использовании и переиспользуется при
+            последующих запусках (если объект на S3 не обновился).
+        model_module: Необязательная строка ``"module.path:ClassName"`` для
+            state-dict-чекпоинтов, требующих явный класс модели.
+            ``None`` → загрузка полной модели из pickle.
+        cache_dir: Директория для кэширования скачанных S3-моделей.
+            По умолчанию ``<tmp>/image-retrieval-models/``.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -141,19 +141,18 @@ class EncoderBlock(BaseModel):
 
 
 class CVATBlock(BaseModel):
-    """Connection parameters for the CVAT annotation platform (v2.x API).
+    """Параметры подключения к платформе аннотирования CVAT (API v2.x).
 
-    Authentication priority: *token* → ``username`` + ``password``.
+    Приоритет аутентификации: *token* → ``username`` + ``password``.
 
-    Attributes:
-        url: Base URL of the CVAT instance (e.g.
-            ``"https://cvat.example.com"``).
-        token: CVAT REST API token.  Takes precedence over username/password.
-        username: CVAT username (only used when *token* is absent).
-        password: CVAT password.
-        project_id: Default project to attach new tasks to.  ``None`` →
-            tasks are created without a project.
-        task_label: Name of the bounding-box label in exported tasks.
+    Атрибуты:
+        url: Базовый URL инстанса CVAT (напр. ``"https://cvat.example.com"``).
+        token: API-токен CVAT.  Имеет приоритет над username/password.
+        username: Логин CVAT (используется только если *token* не задан).
+        password: Пароль CVAT.
+        project_id: Проект, к которому прикрепляются новые задачи.
+            ``None`` → задачи создаются без проекта.
+        task_label: Название метки bounding-box в экспортируемых задачах.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -172,11 +171,11 @@ class CVATBlock(BaseModel):
 
 
 class Configuration(BaseModel):
-    """Root configuration object containing all subsystem blocks.
+    """Корневой объект конфигурации, содержащий все блоки подсистем.
 
-    All blocks are optional except *app* which always carries defaults.
-    Use :meth:`load` as the canonical factory — it handles the
-    Consul → YAML → defaults fallback chain automatically.
+    Все блоки опциональны, кроме *app* — он всегда несёт умолчания.
+    Используйте :meth:`load` как канонический способ создания объекта:
+    он автоматически обрабатывает цепочку Consul → YAML → умолчания.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -194,19 +193,19 @@ class Configuration(BaseModel):
         consul_url: str | None = None,
         consul_key: str | None = None,
     ) -> Configuration:
-        """Load configuration using Consul → YAML → defaults priority chain.
+        """Загружает конфигурацию по цепочке Consul → YAML → умолчания.
 
-        All parameters default to environment variables, so callers can simply
-        invoke ``Configuration.load()`` and rely on ``CONSUL_URL``,
-        ``CONSUL_KEY``, and ``CONFIG_PATH`` env vars.
+        Все параметры по умолчанию берутся из переменных среды, поэтому
+        достаточно вызвать ``Configuration.load()`` и положиться на
+        ``CONSUL_URL``, ``CONSUL_KEY`` и ``CONFIG_PATH``.
 
         Args:
-            config_path: YAML config file path.  Falls back to ``CONFIG_PATH``
-                env var, then ``config.yaml`` in the current working directory.
-            consul_url: Consul agent URL (e.g. ``"http://consul:8500"``).
-                Falls back to ``CONSUL_URL`` env var.
-            consul_key: Consul KV key whose value is the YAML config.  Falls
-                back to ``CONSUL_KEY`` env var, then the default key.
+            config_path: Путь к YAML-файлу конфигурации.  Если не задан —
+                читается из ``CONFIG_PATH``, затем ``config.yaml`` в cwd.
+            consul_url: URL агента Consul (схема + хост + порт).
+                Если не задан — читается из ``CONSUL_URL``.
+            consul_key: Ключ KV, значение которого — YAML-документ.
+                Если не задан — читается из ``CONSUL_KEY``.
         """
         effective_consul_url = consul_url or os.environ.get("CONSUL_URL", "")
         effective_consul_key = (
@@ -218,13 +217,13 @@ class Configuration(BaseModel):
             try:
                 cfg = cls.from_consul(effective_consul_url, effective_consul_key)
                 logger.info(
-                    "Configuration loaded from Consul key '%s'.",
+                    "Конфигурация загружена из Consul, ключ '%s'.",
                     effective_consul_key,
                 )
                 return cfg
             except Exception as exc:
                 logger.warning(
-                    "Consul unavailable (%s) — falling back to YAML / defaults.",
+                    "Consul недоступен (%s) — переключаемся на YAML / умолчания.",
                     exc,
                 )
 
@@ -233,24 +232,24 @@ class Configuration(BaseModel):
         )
         if effective_path.exists():
             cfg = cls.from_yaml(effective_path)
-            logger.info("Configuration loaded from '%s'.", effective_path)
+            logger.info("Конфигурация загружена из '%s'.", effective_path)
             return cfg
 
-        logger.info("No Consul / config file found — using built-in defaults.")
+        logger.info("Consul и файл конфигурации не найдены — используются умолчания.")
         return cls()
 
     @classmethod
     def from_yaml(cls, path: Path) -> Configuration:
-        """Parse *path* as YAML and return a validated :class:`Configuration`.
+        """Разбирает *path* как YAML и возвращает валидированный :class:`Configuration`.
 
         Args:
-            path: Path to the YAML configuration file.
+            path: Путь к YAML-файлу конфигурации.
 
         Raises:
-            FileNotFoundError: If *path* does not exist.
-            pydantic.ValidationError: If the YAML content fails validation.
+            FileNotFoundError: Если *path* не существует.
+            pydantic.ValidationError: Если содержимое YAML не прошло валидацию.
         """
-        import yaml  # local import keeps pyyaml optional until this method is called
+        import yaml  # локальный импорт: pyyaml опциональна до вызова этого метода
 
         with path.open(encoding="utf-8") as fh:
             data: dict[str, Any] = yaml.safe_load(fh) or {}
@@ -258,14 +257,14 @@ class Configuration(BaseModel):
 
     @classmethod
     def from_consul(cls, url: str, key: str) -> Configuration:
-        """Fetch a YAML document from a Consul KV store and parse it.
+        """Читает YAML-документ из Consul KV и разбирает его.
 
         Args:
-            url: Consul agent base URL (scheme + host + port).
-            key: KV key whose value is a YAML document.
+            url: Базовый URL агента Consul (схема + хост + порт).
+            key: KV-ключ, значение которого — YAML-документ.
 
         Raises:
-            KeyError: If *key* does not exist in the KV store.
+            KeyError: Если *key* не существует в KV-хранилище.
         """
         from urllib.parse import urlparse
 
@@ -280,7 +279,7 @@ class Configuration(BaseModel):
         )
         _, kv_data = c.kv.get(key)
         if kv_data is None:
-            raise KeyError(f"Consul key '{key}' not found at {url}")
+            raise KeyError(f"Consul-ключ '{key}' не найден по адресу {url}")
         raw: str = kv_data["Value"].decode("utf-8")
         data: dict[str, Any] = yaml.safe_load(raw) or {}
         return cls.model_validate(data)
@@ -288,18 +287,17 @@ class Configuration(BaseModel):
 
 @dataclass(frozen=True)
 class DatasetMeta:
-    """Resolved paths for one indexed dataset.
+    """Resolved-пути для одного индексированного датасета.
 
-    Created by :class:`~image_retrieval.registry.DatasetRegistry` at startup;
-    passed to :class:`~image_retrieval.indexer.FAISSIndex` and the results
-    viewer so they know where to find source images.
+    Создаётся :class:`~image_retrieval.registry.DatasetRegistry` при запуске;
+    передаётся в :class:`~image_retrieval.indexer.FAISSIndex` и виджет
+    отображения результатов.
 
-    Attributes:
-        name: Human-readable dataset name (sub-folder name under
-            ``datasets_dir``).
-        index_path: Absolute path to the ``index.faiss`` file.
-        metadata_path: Absolute path to the ``metadata.parquet`` file.
-        images_root: Absolute path to the folder containing source images.
+    Атрибуты:
+        name: Человекочитаемое имя датасета (имя поддиректории в ``datasets_dir``).
+        index_path: Абсолютный путь к файлу ``index.faiss``.
+        metadata_path: Абсолютный путь к файлу ``metadata.parquet``.
+        images_root: Абсолютный путь к директории с исходными изображениями.
     """
 
     name: str
@@ -308,8 +306,8 @@ class DatasetMeta:
     images_root: Path
 
 
-#: Alias for :class:`AppBlock` — keeps existing ``AppConfig`` imports working.
+#: Псевдоним :class:`AppBlock` — сохраняет работоспособность импортов ``AppConfig``.
 AppConfig = AppBlock
 
-#: Alias for :class:`S3Block` — keeps existing ``S3Config`` imports working.
+#: Псевдоним :class:`S3Block` — сохраняет работоспособность импортов ``S3Config``.
 S3Config = S3Block

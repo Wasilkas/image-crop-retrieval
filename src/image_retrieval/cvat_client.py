@@ -1,21 +1,21 @@
-"""CVAT 2.x REST API client.
+"""REST API-клиент CVAT 2.x.
 
-Provides a thin, typed wrapper around the CVAT v2 API sufficient for the
-image-crop-retrieval export workflow:
+Предоставляет тонкую типизированную обёртку над API CVAT v2, достаточную
+для рабочего процесса экспорта из image-crop-retrieval:
 
-1. Create a task with a single bounding-box label.
-2. Upload source images to the task.
-3. Wait until CVAT has processed the uploaded data.
-4. Fetch the auto-created job ID.
-5. Push rectangle annotations (one per selected crop).
+1. Создать задачу с одной меткой bounding-box.
+2. Загрузить исходные изображения в задачу.
+3. Дождаться обработки загруженных данных в CVAT.
+4. Получить автоматически созданный job ID.
+5. Отправить прямоугольные аннотации (по одной на каждый выбранный кроп).
 
-Authentication
+Аутентификация
 --------------
-Token-based authentication is preferred (``CVATBlock.token``).  If only
-``username`` / ``password`` are supplied the client performs the login flow
-on first use and caches the session token in memory.
+Предпочтителен токен (``CVATBlock.token``).  Если указаны только
+``username`` / ``password`` — клиент выполняет логин при первом использовании
+и кэширует токен сессии в памяти.
 
-Supported CVAT versions: 2.x (tested against 2.4+).
+Поддерживаемые версии CVAT: 2.x (протестировано с 2.4+).
 """
 
 from __future__ import annotations
@@ -33,23 +33,23 @@ from .config import CVATBlock
 
 logger = logging.getLogger(__name__)
 
-# How long (seconds) to wait for CVAT to process uploaded data.
+# Таймауты ожидания готовности задачи CVAT
 _TASK_READY_TIMEOUT = 120
 _TASK_POLL_INTERVAL = 2
 
 
 @dataclass(frozen=True)
 class CVATAnnotation:
-    """One rectangle annotation to be pushed to CVAT.
+    """Одна прямоугольная аннотация для отправки в CVAT.
 
-    Attributes:
-        frame: Zero-based index of the frame (image) within the task. Must
-            match the order in which images were uploaded.
-        xtl: X-coordinate of the top-left corner (pixels).
-        ytl: Y-coordinate of the top-left corner (pixels).
-        xbr: X-coordinate of the bottom-right corner (pixels).
-        ybr: Y-coordinate of the bottom-right corner (pixels).
-        label_id: CVAT internal label ID, obtained from the created task.
+    Атрибуты:
+        frame: Нулевой индекс кадра (изображения) внутри задачи.  Должен
+            совпадать с порядком загрузки изображений.
+        xtl: X-координата верхнего левого угла (пикселей).
+        ytl: Y-координата верхнего левого угла (пикселей).
+        xbr: X-координата нижнего правого угла (пикселей).
+        ybr: Y-координата нижнего правого угла (пикселей).
+        label_id: Внутренний ID метки CVAT, полученный из созданной задачи.
     """
 
     frame: int
@@ -62,13 +62,13 @@ class CVATAnnotation:
 
 @dataclass
 class ExportResult:
-    """Summary returned by :meth:`CVATClient.export_to_task`.
+    """Сводка, возвращаемая :meth:`CVATClient.export_to_task`.
 
-    Attributes:
-        task_id: CVAT task identifier.
-        task_url: Direct URL to the task in the CVAT web UI.
-        image_count: Number of images uploaded.
-        annotation_count: Number of annotations created.
+    Атрибуты:
+        task_id: Идентификатор задачи CVAT.
+        task_url: Прямая ссылка на задачу в веб-интерфейсе CVAT.
+        image_count: Количество загруженных изображений.
+        annotation_count: Количество созданных аннотаций.
     """
 
     task_id: int
@@ -78,10 +78,10 @@ class ExportResult:
 
 
 class CVATClient:
-    """Thin wrapper around the CVAT 2.x REST API.
+    """Тонкая обёртка над REST API CVAT 2.x.
 
     Args:
-        config: CVAT connection and authentication parameters.
+        config: Параметры подключения и аутентификации CVAT.
     """
 
     def __init__(self, config: CVATBlock) -> None:
@@ -99,34 +99,36 @@ class CVATClient:
         images: list[tuple[str, bytes]],
         annotations: list[tuple[str, int, int, int, int]],
     ) -> ExportResult:
-        """Create a CVAT task, upload images, and push bounding-box annotations.
+        """Создаёт задачу CVAT, загружает изображения и отправляет аннотации.
 
         Args:
-            task_name: Human-readable name for the new CVAT task.
-            images: List of ``(filename, image_bytes)`` pairs.  The order
-                determines frame indices used in *annotations*.
-            annotations: List of ``(filename, x1, y1, x2, y2)`` tuples.
-                *filename* must match one of the names in *images*.
-                Coordinates are in pixels relative to the source image.
+            task_name: Человекочитаемое имя новой задачи CVAT.
+            images: Список пар ``(имя_файла, байты_изображения)``.  Порядок
+                определяет индексы кадров в *annotations*.
+            annotations: Список кортежей ``(имя_файла, x1, y1, x2, y2)``.
+                *имя_файла* должно совпадать с одним из имён в *images*.
+                Координаты — в пикселях относительно исходного изображения.
 
         Returns:
-            :class:`ExportResult` with task details.
+            :class:`ExportResult` с деталями задачи.
 
         Raises:
-            httpx.HTTPStatusError: On any non-2xx CVAT response.
-            TimeoutError: If CVAT does not finish processing within
-                :data:`_TASK_READY_TIMEOUT` seconds.
+            httpx.HTTPStatusError: При любом не-2xx ответе CVAT.
+            TimeoutError: Если CVAT не завершил обработку за
+                :data:`_TASK_READY_TIMEOUT` секунд.
         """
         self._ensure_auth()
 
         task_id, label_id = self._create_task(task_name)
-        logger.info("Created CVAT task id=%d name='%s'", task_id, task_name)
+        logger.info("Создана задача CVAT id=%d name='%s'", task_id, task_name)
 
         self._upload_images(task_id, images)
-        logger.info("Uploaded %d images to task %d", len(images), task_id)
+        logger.info(
+            "Загружено %d изображений в задачу %d", len(images), task_id
+        )
 
         job_id = self._wait_for_job(task_id)
-        logger.info("Task %d is ready, job_id=%d", task_id, job_id)
+        logger.info("Задача %d готова, job_id=%d", task_id, job_id)
 
         frame_map = {name: idx for idx, (name, _) in enumerate(images)}
 
@@ -154,13 +156,13 @@ class CVATClient:
         )
 
     def _ensure_auth(self) -> None:
-        """Guarantee ``self._token`` is set; perform login if necessary."""
+        """Гарантирует установку ``self._token``; выполняет логин при необходимости."""
         if self._token:
             return
         if not self._config.username or not self._config.password:
             raise ValueError(
-                "CVAT authentication requires either 'token' or "
-                "'username' + 'password' in CVATBlock."
+                "Аутентификация CVAT требует 'token' или "
+                "'username' + 'password' в CVATBlock."
             )
         resp = self._http.post(
             "/api/auth/login",
@@ -171,20 +173,23 @@ class CVATClient:
         )
         resp.raise_for_status()
         self._token = resp.json()["key"]
-        logger.debug("CVAT login successful for user '%s'.", self._config.username)
+        logger.debug(
+            "CVAT: вход выполнен для пользователя '%s'.", self._config.username
+        )
 
     def _auth_headers(self) -> dict[str, str]:
-        """Return HTTP headers carrying the authentication token."""
+        """Возвращает HTTP-заголовки с токеном аутентификации."""
         if not self._token:
-            raise RuntimeError("Not authenticated — call _ensure_auth() first.")
+            raise RuntimeError(
+                "Не аутентифицирован — сначала вызовите _ensure_auth()."
+            )
         return {"Authorization": f"Token {self._token}"}
 
     def _create_task(self, name: str) -> tuple[int, int]:
-        """Create a CVAT task and return ``(task_id, label_id)``.
+        """Создаёт задачу CVAT и возвращает ``(task_id, label_id)``.
 
-        The task is created with a single label named
-        :attr:`CVATBlock.task_label`.  If :attr:`CVATBlock.project_id` is
-        set, the task is attached to that project.
+        Задача создаётся с одной меткой :attr:`CVATBlock.task_label`.
+        Если задан :attr:`CVATBlock.project_id` — задача прикрепляется к проекту.
         """
         payload: dict[str, Any] = {
             "name": name,
@@ -202,7 +207,7 @@ class CVATClient:
         data = resp.json()
         task_id: int = data["id"]
 
-        # Locate label ID in the response
+        # Ищем ID метки в ответе
         labels: list[dict[str, Any]] = data.get("labels", [])
         label_id: int = labels[0]["id"] if labels else 0
 
@@ -211,38 +216,38 @@ class CVATClient:
     def _upload_images(
         self, task_id: int, images: list[tuple[str, bytes]]
     ) -> None:
-        """Upload *images* to the data endpoint of *task_id*.
+        """Загружает *images* в data-endpoint задачи *task_id*.
 
-        CVAT expects a multipart/form-data request with one or more
-        ``client_files[]`` fields.  ``image_quality`` controls JPEG
-        re-compression (100 = lossless).
+        CVAT ожидает multipart/form-data запрос с одним или несколькими полями
+        ``client_files[]``.  ``image_quality`` управляет JPEG-рекомпрессией
+        (100 = без потерь).
         """
         files = [
             ("client_files[]", (name, io.BytesIO(data), "image/jpeg"))
             for name, data in images
         ]
-        # httpx handles Content-Type boundary automatically for multipart
+        # httpx автоматически обрабатывает Content-Type boundary для multipart
         resp = self._http.post(
             f"/api/tasks/{task_id}/data",
             data={"image_quality": "95"},
             files=files,
             headers=self._auth_headers(),
-            timeout=120.0,  # large upload may take time
+            timeout=120.0,  # большая загрузка может занять время
         )
         resp.raise_for_status()
 
     def _wait_for_job(self, task_id: int) -> int:
-        """Poll until the task data is processed and return the job ID.
+        """Ожидает обработки данных задачи и возвращает job ID.
 
-        CVAT processes uploaded images asynchronously.  This method polls
-        the task status until ``state == "completed"`` or the timeout
-        :data:`_TASK_READY_TIMEOUT` is exceeded.
+        CVAT обрабатывает загруженные изображения асинхронно.  Метод опрашивает
+        статус задачи до ``state == "completed"`` или до истечения таймаута
+        :data:`_TASK_READY_TIMEOUT`.
 
         Returns:
-            ID of the first job associated with *task_id*.
+            ID первого job'а, связанного с *task_id*.
 
         Raises:
-            TimeoutError: If the task is not ready within the timeout.
+            TimeoutError: Если задача не готова в течение таймаута.
         """
         deadline = time.monotonic() + _TASK_READY_TIMEOUT
         while time.monotonic() < deadline:
@@ -254,14 +259,17 @@ class CVATClient:
             state: str = resp.json().get("state", "")
             if state.lower() in {"completed", "finished"}:
                 break
-            logger.debug("Task %d status: %s — waiting…", task_id, state)
+            logger.debug(
+                "Задача %d статус: %s — ожидание...", task_id, state
+            )
             time.sleep(_TASK_POLL_INTERVAL)
         else:
             raise TimeoutError(
-                f"CVAT task {task_id} was not ready within "
-                f"{_TASK_READY_TIMEOUT}s."
+                f"Задача CVAT {task_id} не стала готова за "
+                f"{_TASK_READY_TIMEOUT} секунд."
             )
 
+        # Получаем список jobs для извлечения job ID
         resp = self._http.get(
             "/api/jobs",
             params={"task_id": task_id},
@@ -270,16 +278,18 @@ class CVATClient:
         resp.raise_for_status()
         jobs: list[dict[str, Any]] = resp.json().get("results", [])
         if not jobs:
-            raise RuntimeError(f"No jobs found for CVAT task {task_id}.")
+            raise RuntimeError(
+                f"Для задачи CVAT {task_id} не найдено ни одного job'а."
+            )
         job_id: int = jobs[0]["id"]
         return job_id
 
     def _push_annotations(
         self, job_id: int, annotations: list[CVATAnnotation]
     ) -> None:
-        """Push rectangle annotations to *job_id*.
+        """Отправляет прямоугольные аннотации в *job_id*.
 
-        Uses ``PATCH /api/jobs/{id}/annotations?action=create``.
+        Использует ``PATCH /api/jobs/{id}/annotations?action=create``.
         """
         shapes = [
             {
@@ -304,21 +314,21 @@ class CVATClient:
         )
         resp.raise_for_status()
         logger.info(
-            "Pushed %d annotations to CVAT job %d.", len(shapes), job_id
+            "Отправлено %d аннотаций в job CVAT %d.", len(shapes), job_id
         )
 
 
 @dataclass
 class PreparedExport:
-    """Prepared export data grouped by source image.
+    """Подготовленные данные экспорта, сгруппированные по исходному изображению.
 
-    Built by :func:`prepare_export` from the user's selected
-    :class:`~image_retrieval.indexer.SearchResult` list.
+    Строится :func:`prepare_export` из выбранных пользователем
+    :class:`~image_retrieval.indexer.SearchResult`.
 
-    Attributes:
-        task_name: Suggested CVAT task name.
-        images: ``(filename, image_bytes)`` pairs in upload order.
-        annotations: ``(filename, x1, y1, x2, y2)`` for each selected crop.
+    Атрибуты:
+        task_name: Предлагаемое имя задачи CVAT.
+        images: Пары ``(имя_файла, байты_изображения)`` в порядке загрузки.
+        annotations: ``(имя_файла, x1, y1, x2, y2)`` для каждого выбранного кропа.
     """
 
     task_name: str
@@ -331,21 +341,20 @@ def prepare_export(
     load_image_bytes: Any,  # Callable[[str], bytes]
     task_name: str = "",
 ) -> PreparedExport:
-    """Build a :class:`PreparedExport` from selected search results.
+    """Строит :class:`PreparedExport` из выбранных результатов поиска.
 
-    Loads each unique source image exactly once and collects bounding-box
-    annotations.
+    Загружает каждое уникальное исходное изображение ровно один раз и
+    собирает bounding-box аннотации.
 
     Args:
-        results: Selected :class:`~image_retrieval.indexer.SearchResult`
-            instances.
-        load_image_bytes: ``Callable[[image_path], bytes]`` that returns the
-            raw image bytes for a given path (local or S3).
-        task_name: Optional task name override.  Auto-generated from timestamp
-            if empty.
+        results: Выбранные экземпляры :class:`~image_retrieval.indexer.SearchResult`.
+        load_image_bytes: ``Callable[[image_path], bytes]``, возвращающий
+            сырые байты изображения по заданному пути (локальному или S3).
+        task_name: Необязательное имя задачи.  Если пусто — генерируется
+            автоматически из временной метки.
 
     Returns:
-        A :class:`PreparedExport` ready to pass to
+        :class:`PreparedExport`, готовый для передачи в
         :meth:`CVATClient.export_to_task`.
     """
     from collections.abc import Callable
@@ -356,15 +365,17 @@ def prepare_export(
     if not task_name:
         task_name = f"image-crop-retrieval-{time.strftime('%Y%m%d-%H%M%S')}"
 
-    seen_paths: dict[str, str] = {}  # image_path → filename used in task
+    seen_paths: dict[str, str] = {}  # image_path → имя файла в задаче
     images: list[tuple[str, bytes]] = []
     annotations: list[tuple[str, int, int, int, int]] = []
 
     for result in results:
         img_path: str = result.image_path
         if img_path not in seen_paths:
-            filename = PurePosixPath(img_path).name or f"image_{len(seen_paths)}.jpg"
-            # Ensure uniqueness in the task image list
+            filename = (
+                PurePosixPath(img_path).name or f"image_{len(seen_paths)}.jpg"
+            )
+            # Обеспечиваем уникальность имён в задаче
             if any(name == filename for name, _ in images):
                 stem = PurePosixPath(filename).stem
                 ext = PurePosixPath(filename).suffix

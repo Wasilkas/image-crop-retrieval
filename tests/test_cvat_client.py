@@ -103,7 +103,7 @@ def test_login_flow_on_first_call(cvat_cfg_userpass: CVATBlock) -> None:
 def test_ensure_auth_raises_without_credentials() -> None:
     """No token and no username/password → ValueError."""
     client = CVATClient(CVATBlock(url=CVAT_URL))
-    with pytest.raises(ValueError, match="authentication"):
+    with pytest.raises(ValueError, match="authentication|[Аа]утентификац"):
         client._ensure_auth()
 
 
@@ -133,7 +133,7 @@ def test_wait_for_job_raises_when_no_jobs(cvat_cfg: CVATBlock) -> None:
     respx.get(f"{CVAT_URL}/api/jobs").mock(
         return_value=httpx.Response(200, json={"results": []})
     )
-    with pytest.raises(RuntimeError, match="No jobs"):
+    with pytest.raises(RuntimeError, match="No jobs|не найдено"):
         CVATClient(cvat_cfg)._wait_for_job(task_id)
 
 

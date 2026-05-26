@@ -1,28 +1,28 @@
-"""SSL embedding abstraction and PyTorch implementation.
+"""Абстракция SSL-эмбеддинга и PyTorch-реализация.
 
-Two public objects are exported:
+Два публичных объекта:
 
-* :class:`EmbedderProtocol` — a ``@runtime_checkable`` structural type that any
-  embedder must satisfy.  Keeps the rest of the codebase decoupled from PyTorch.
+* :class:`EmbedderProtocol` — ``@runtime_checkable``-протокол, которому должен
+  удовлетворять любой эмбеддер.  Отделяет остальной код от PyTorch.
 
-* :class:`TorchEmbedder` — concrete implementation that loads a ``.pt`` / ``.pth``
-  checkpoint and runs CPU inference.
+* :class:`TorchEmbedder` — конкретная реализация, загружающая ``.pt``/``.pth``
+  чекпоинт и выполняющая CPU-инференс.
 
-Supported checkpoint formats
-------------------------------
-Full-model pickle
-    ``torch.save(model, path)``  →  ``torch.load(path)`` returns an ``nn.Module``.
-    Use when the model class definition is *not* available in the inference
-    environment (the class is baked into the pickle).
+Поддерживаемые форматы чекпоинтов
+-----------------------------------
+Полная модель (pickle)
+    ``torch.save(model, path)``  →  ``torch.load(path)`` возвращает ``nn.Module``.
+    Используйте, когда определение класса модели *недоступно* в среде инференса
+    (класс зашит в pickle).
 
 State-dict
-    ``torch.save(model.state_dict(), path)``  →  ``torch.load(path)`` returns a
-    ``dict``.  Requires passing ``model_class`` to ``TorchEmbedder`` so the
-    architecture can be instantiated before loading weights.
+    ``torch.save(model.state_dict(), path)``  →  ``torch.load(path)`` возвращает
+    ``dict``.  Требует передачи ``model_class`` в ``TorchEmbedder`` для создания
+    экземпляра архитектуры перед загрузкой весов.
 
 .. warning::
-    ``torch.load`` with ``weights_only=False`` executes arbitrary Python code
-    embedded in the pickle.  Only load checkpoints from **trusted sources**.
+    ``torch.load`` с ``weights_only=False`` выполняет произвольный Python-код
+    из pickle.  Загружайте чекпоинты только из **доверенных источников**.
 """
 
 from __future__ import annotations
@@ -38,47 +38,47 @@ from PIL import Image as PILImage
 
 @runtime_checkable
 class EmbedderProtocol(Protocol):
-    """Minimal interface that every embedder must implement.
+    """Минимальный интерфейс, которому должен удовлетворять каждый эмбеддер.
 
-    Implementors should return **L2-normalised** float32 vectors so that inner
-    product search is equivalent to cosine similarity.
+    Реализации должны возвращать **L2-нормализованные** float32-векторы,
+    чтобы поиск по inner product был эквивалентен косинусному сходству.
     """
 
     def embed(self, crops: list[PILImage.Image]) -> np.ndarray:
-        """Compute embeddings for a batch of PIL images.
+        """Вычисляет эмбеддинги для батча PIL-изображений.
 
         Args:
-            crops: Non-empty list of PIL images in any size / mode.
-                   Implementations are expected to handle resizing and
-                   colour-mode conversion internally.
+            crops: Непустой список PIL-изображений любого размера и режима.
+                   Реализации сами выполняют изменение размера и конвертацию
+                   цветового пространства.
 
         Returns:
-            Float32 ndarray of shape ``(len(crops), embedding_dim)``.
-            Rows are **L2-normalised** (unit vectors).
+            float32-ndarray формы ``(len(crops), embedding_dim)``.
+            Строки являются **L2-нормализованными** (единичные векторы).
 
         Raises:
-            ValueError: If ``crops`` is empty.
+            ValueError: Если ``crops`` пуст.
         """
         ...
 
 
 class TorchEmbedder:
-    """Wraps a custom PyTorch checkpoint for CPU-based SSL inference.
+    """Обёртка над кастомным PyTorch-чекпоинтом для CPU-инференса SSL-моделей.
 
     Args:
-        checkpoint_path: Path to the ``.pt`` or ``.pth`` file.
-        model_class: Optional ``nn.Module`` *class* (not an instance).
-            When provided the checkpoint is assumed to be a state-dict and
-            the class is instantiated before loading weights.
-            When ``None`` the checkpoint is assumed to be a full-model pickle.
-        input_size: ``(height, width)`` to which every crop is resized before
-            being fed to the model.  Defaults to ``(224, 224)``.
-        device: PyTorch device string.  Defaults to ``"cpu"``.
+        checkpoint_path: Путь к файлу ``.pt`` или ``.pth``.
+        model_class: Необязательный *класс* ``nn.Module`` (не экземпляр).
+            Если задан — чекпоинт считается state-dict, класс инстанцируется
+            перед загрузкой весов.
+            Если ``None`` — чекпоинт считается полной моделью (pickle).
+        input_size: ``(высота, ширина)`` для изменения размера каждого кропа
+            перед подачей в модель.  По умолчанию ``(224, 224)``.
+        device: Строка устройства PyTorch.  По умолчанию ``"cpu"``.
 
     Raises:
-        FileNotFoundError: If ``checkpoint_path`` does not exist.
-        RuntimeError: If the checkpoint format does not match the expected mode
-            (e.g. a state-dict dict when no ``model_class`` was given, or vice-versa).
+        FileNotFoundError: Если ``checkpoint_path`` не существует.
+        RuntimeError: Если формат чекпоинта не соответствует ожидаемому режиму
+            (напр. state-dict при отсутствии ``model_class`` или наоборот).
     """
 
     def __init__(
@@ -98,28 +98,28 @@ class TorchEmbedder:
         path: Path,
         model_class: type[nn.Module] | None,
     ) -> nn.Module:
-        """Load and return the model from *path*.
+        """Загружает и возвращает модель из *path*.
 
-        Supports both full-model pickle and state-dict formats; the format is
-        inferred from whether *model_class* is provided.
+        Поддерживает форматы полной модели (pickle) и state-dict; формат
+        определяется по наличию *model_class*.
 
         Raises:
-            FileNotFoundError: checkpoint file missing.
-            RuntimeError: format mismatch between checkpoint and expected mode.
+            FileNotFoundError: Файл чекпоинта не найден.
+            RuntimeError: Несоответствие формата и ожидаемого режима.
         """
         if not path.exists():
-            raise FileNotFoundError(f"Checkpoint not found: {path}")
+            raise FileNotFoundError(f"Чекпоинт не найден: {path}")
 
-        # weights_only=False is required for full-model pickles.
-        # Only load checkpoints from trusted sources (see module docstring).
+        # weights_only=False необходим для pickle полной модели.
+        # Загружайте чекпоинты только из доверенных источников (см. docstring модуля).
         payload = torch.load(path, map_location=self._device, weights_only=False)  # noqa: S614
 
         if model_class is not None:
             if not isinstance(payload, dict):
                 raise RuntimeError(
-                    f"Expected a state-dict (dict) at '{path}', "
-                    f"but torch.load() returned {type(payload).__name__}. "
-                    "Remove the model_class argument to use full-model loading."
+                    f"Ожидался state-dict (dict) в '{path}', "
+                    f"но torch.load() вернул {type(payload).__name__}. "
+                    "Уберите model_class для режима полной модели."
                 )
             model = model_class()
             model.load_state_dict(payload)
@@ -127,30 +127,31 @@ class TorchEmbedder:
 
         if not isinstance(payload, nn.Module):
             raise RuntimeError(
-                f"Expected an nn.Module at '{path}', "
-                f"but torch.load() returned {type(payload).__name__}. "
-                "Provide model_class= for state-dict checkpoints."
+                f"Ожидался nn.Module в '{path}', "
+                f"но torch.load() вернул {type(payload).__name__}. "
+                "Передайте model_class= для state-dict-чекпоинтов."
             )
         return payload.to(self._device)
 
     @torch.no_grad()
     def embed(self, crops: list[PILImage.Image]) -> np.ndarray:
-        """Embed a batch of crops; returns L2-normalised float32 array ``(N, D)``.
+        """Вычисляет эмбеддинги батча кропов; возвращает L2-нормализованный
+        массив формы ``(N, D)``.
 
         Args:
-            crops: Non-empty list of PIL images.
+            crops: Непустой список PIL-изображений.
 
         Returns:
-            Float32 ndarray of shape ``(len(crops), embedding_dim)``,
-            where every row is an L2-unit vector.
+            float32-ndarray формы ``(len(crops), embedding_dim)``,
+            каждая строка — единичный L2-вектор.
 
         Raises:
-            ValueError: If *crops* is empty.
+            ValueError: Если *crops* пуст.
         """
         if not crops:
-            raise ValueError("crops must be a non-empty list")
+            raise ValueError("crops должен быть непустым списком")
 
-        # Convert to RGB, apply transforms, stack into a batch tensor
+        # Конвертируем в RGB, применяем трансформации, собираем в батч-тензор
         tensors = torch.stack(
             [self._transform(crop.convert("RGB")) for crop in crops]
         )
@@ -158,31 +159,31 @@ class TorchEmbedder:
 
         raw: torch.Tensor = self._model(tensors)
 
-        # Some models return spatial feature maps (N, C, H, W) — flatten them
+        # Некоторые модели возвращают пространственные карты (N, C, H, W) — выравниваем
         if raw.dim() > 2:
             raw = raw.flatten(start_dim=1)
 
-        # L2-normalise so that IndexFlatIP gives cosine similarity scores
+        # L2-нормализация: IndexFlatIP даёт косинусное сходство для единичных векторов
         normed = torch.nn.functional.normalize(raw, p=2, dim=1)
         return normed.cpu().numpy().astype(np.float32)
 
 
 def _build_transform(input_size: tuple[int, int]) -> torch.nn.Module:
-    """Return a torchvision transform pipeline.
+    """Возвращает пайплайн trochvision-трансформаций.
 
-    The pipeline resizes to *input_size*, converts to a float tensor, and
-    normalises using ImageNet mean/std — a sensible default for most SSL models
-    trained on natural images.
+    Пайплайн изменяет размер до *input_size*, переводит в float-тензор и
+    нормализует по ImageNet mean/std — разумное умолчание для большинства
+    SSL-моделей, обученных на натуральных изображениях.
 
     Args:
-        input_size: ``(height, width)`` target size.
+        input_size: Целевой размер ``(высота, ширина)``.
 
     Returns:
-        A ``torchvision.transforms.Compose`` instance.
+        Экземпляр ``torchvision.transforms.Compose``.
     """
-    from torchvision import transforms  # deferred import: torchvision is heavy
+    from torchvision import transforms  # отложенный импорт: torchvision тяжёлая
 
-    # torchvision has no py.typed stubs; cast to the expected type
+    # torchvision не имеет py.typed стабов; cast к ожидаемому типу
     return cast(
         torch.nn.Module,
         transforms.Compose(

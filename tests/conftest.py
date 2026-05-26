@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for image-crop-retrieval tests."""
+"""Общие pytest-фикстуры для тестов image-crop-retrieval."""
 
 from __future__ import annotations
 
@@ -11,18 +11,18 @@ import pandas as pd
 import pytest
 from PIL import Image as PILImage
 
-DIM = 64  # small embedding dimension for speed
+DIM = 64  # малая размерность эмбеддинга для быстрых тестов
 
 
 @pytest.fixture()
 def embedding_dim() -> int:
-    """Return the embedding dimensionality used in test fixtures."""
+    """Возвращает размерность эмбеддинга, используемую в тестовых фикстурах."""
     return DIM
 
 
 @pytest.fixture()
 def sample_embeddings() -> np.ndarray:
-    """Return 10 random L2-normalised float32 embeddings of shape (10, DIM)."""
+    """Возвращает 10 случайных L2-нормализованных float32-эмбеддингов формы (10, DIM)."""
     rng = np.random.default_rng(42)
     vecs = rng.random((10, DIM)).astype(np.float32)
     norms = np.linalg.norm(vecs, axis=1, keepdims=True)
@@ -31,7 +31,7 @@ def sample_embeddings() -> np.ndarray:
 
 @pytest.fixture()
 def sample_meta_df() -> pd.DataFrame:
-    """Return a metadata DataFrame with 10 rows (matching sample_embeddings)."""
+    """Возвращает DataFrame метаданных с 10 строками (соответствует sample_embeddings)."""
     return pd.DataFrame(
         {
             "box_id": [f"box_{i:03d}" for i in range(10)],
@@ -50,7 +50,7 @@ def dataset_dir(
     sample_embeddings: np.ndarray,
     sample_meta_df: pd.DataFrame,
 ) -> Path:
-    """Write a complete dataset directory (index.faiss + metadata.parquet)."""
+    """Записывает полную директорию датасета (index.faiss + metadata.parquet)."""
     ds = tmp_path / "test_dataset"
     ds.mkdir()
 
@@ -64,13 +64,13 @@ def dataset_dir(
 
 @pytest.fixture()
 def small_image() -> PILImage.Image:
-    """Return a tiny 32×32 RGB PIL image (solid colour)."""
+    """Возвращает маленькое 32×32 RGB PIL-изображение (сплошной цвет)."""
     return PILImage.new("RGB", (32, 32), color=(128, 64, 32))
 
 
 @pytest.fixture()
 def small_image_bytes(small_image: PILImage.Image) -> bytes:
-    """Return JPEG bytes for small_image."""
+    """Возвращает JPEG-байты для small_image."""
     buf = io.BytesIO()
     small_image.save(buf, format="JPEG", quality=80)
     return buf.getvalue()

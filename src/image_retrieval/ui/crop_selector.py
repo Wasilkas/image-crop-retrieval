@@ -1,23 +1,23 @@
-"""Streamlit widget: image upload + bounding-box crop selector.
+"""Streamlit-виджет: загрузка изображения и выбор кропа рамкой.
 
-The widget renders a ``streamlit-drawable-canvas`` over the uploaded image
-and returns the user-drawn crop as a ``(full_image, crop)`` tuple, or
-``None`` when the user has not yet drawn a valid rectangle.
+Виджет отображает ``streamlit-drawable-canvas`` поверх загруженного изображения
+и возвращает нарисованный пользователем кроп в виде кортежа ``(полное_изображение,
+кроп)`` или ``None``, если пользователь ещё не нарисовал корректный прямоугольник.
 
-Fabric.js coordinate quirks
------------------------------
-The canvas JSON encodes rectangles as Fabric.js objects with the following
-fields that need special handling:
+Особенности координат Fabric.js
+---------------------------------
+JSON холста кодирует прямоугольники как объекты Fabric.js со следующими полями,
+требующими особой обработки:
 
-* ``left`` / ``top`` — top-left corner *before* any transforms.
-* ``width`` / ``height`` — un-scaled dimensions; can be **negative** when the
-  user draws right-to-left or bottom-to-top.
-* ``scaleX`` / ``scaleY`` — scale transform applied on top of width/height
-  (default ``1.0``).  The true pixel size of the rectangle is
+* ``left`` / ``top`` — левый верхний угол *до* применения трансформаций.
+* ``width`` / ``height`` — размеры без масштабирования; могут быть **отрицательными**
+  при рисовании справа налево или снизу вверх.
+* ``scaleX`` / ``scaleY`` — масштабная трансформация поверх width/height
+  (по умолч. ``1.0``).  Фактический пиксельный размер:
   ``width * scaleX`` × ``height * scaleY``.
 
-This module resolves all of the above into a canonical ``(x1, y1, x2, y2)``
-bounding box with ``x1 < x2`` and ``y1 < y2``.
+Модуль приводит всё перечисленное к каноническому ``(x1, y1, x2, y2)``
+с гарантией ``x1 < x2`` и ``y1 < y2``.
 """
 
 from __future__ import annotations
@@ -34,41 +34,42 @@ from ..config import AppConfig
 def render_crop_selector(
     config: AppConfig,
 ) -> tuple[PILImage.Image, PILImage.Image] | None:
-    """Render the file-uploader and drawable canvas; return the crop or ``None``.
+    """Отображает загрузчик файлов и холст; возвращает кроп или ``None``.
 
-    The function is **stateless** beyond Streamlit's own widget state — it reads
-    widget results and returns them without storing anything in ``session_state``.
+    Функция **не имеет состояния** за пределами встроенного состояния виджетов
+    Streamlit — читает результаты виджетов и возвращает их без сохранения в
+    ``session_state``.
 
     Args:
-        config: Application configuration, used for canvas dimensions and
+        config: Конфигурация приложения; используются размеры холста и
             ``min_crop_px``.
 
     Returns:
-        ``(full_image, crop)`` — the original PIL image at its native resolution
-        and the cropped sub-image — when the user has uploaded a file **and**
-        drawn a valid rectangle.  ``None`` otherwise.
+        ``(полное_изображение, кроп)`` — оригинальное PIL-изображение в исходном
+        разрешении и вырезанный фрагмент — когда пользователь загрузил файл
+        **и** нарисовал корректный прямоугольник.  ``None`` в противном случае.
     """
     uploaded_file = st.file_uploader(
-        label="Upload an image",
+        label="Загрузите изображение",
         type=["jpg", "jpeg", "png", "bmp", "tiff", "webp"],
-        help="Supported formats: JPEG, PNG, BMP, TIFF, WebP",
+        help="Поддерживаемые форматы: JPEG, PNG, BMP, TIFF, WebP",
     )
     if uploaded_file is None:
         return None
 
     full_image = PILImage.open(uploaded_file).convert("RGB")
 
-    # Resize for display — never upscale, preserve aspect ratio
+    # Изменяем размер для отображения — никогда не увеличиваем, сохраняем пропорции
     display_image = _fit_to_canvas(
         full_image, config.canvas_width, config.canvas_height
     )
 
     st.markdown(
-        "**Draw a rectangle** on the image to select the crop you want to search for."
+        "**Нарисуйте прямоугольник** на изображении, чтобы выбрать кроп для поиска."
     )
     st.caption(
-        f"Original size: {full_image.width} × {full_image.height} px  ·  "
-        f"Displayed at: {display_image.width} × {display_image.height} px"
+        f"Исходный размер: {full_image.width} × {full_image.height} пкс  ·  "
+        f"Отображается как: {display_image.width} × {display_image.height} пкс"
     )
 
     canvas_result = st_canvas(
@@ -85,12 +86,12 @@ def render_crop_selector(
 
     bbox = _extract_rect(canvas_result)
     if bbox is None:
-        st.info("⬆️ Draw a rectangle on the image above, then click **Search**.")
+        st.info("⬆️ Нарисуйте прямоугольник на изображении, затем нажмите **Найти**.")
         return None
 
     x1_d, y1_d, x2_d, y2_d = bbox
 
-    # Scale display-space coordinates back to original image space
+    # Масштабируем координаты холста обратно в пространство исходного изображения
     scale_x = full_image.width / display_image.width
     scale_y = full_image.height / display_image.height
     x1 = max(0, int(x1_d * scale_x))
@@ -100,19 +101,19 @@ def render_crop_selector(
 
     if (x2 - x1) < config.min_crop_px or (y2 - y1) < config.min_crop_px:
         st.warning(
-            f"The drawn crop is too small "
-            f"({x2 - x1} × {y2 - y1} px in the original image).  "
-            f"Please draw a box that is at least {config.min_crop_px} px on each side."
+            f"Нарисованный кроп слишком мал "
+            f"({x2 - x1} × {y2 - y1} пкс в исходном изображении).  "
+            f"Нарисуйте рамку не менее {config.min_crop_px} пкс с каждой стороны."
         )
         return None
 
     crop = full_image.crop((x1, y1, x2, y2))
 
-    # Show a small preview of the selected crop
-    with st.expander("Selected crop preview", expanded=False):
+    # Небольшой предпросмотр выбранного кропа
+    with st.expander("Предпросмотр выбранного кропа", expanded=False):
         caption = (
-            f"Crop: [{x1},{y1} – {x2},{y2}] "
-            f"({crop.width}×{crop.height} px)"
+            f"Кроп: [{x1},{y1} – {x2},{y2}] "
+            f"({crop.width}×{crop.height} пкс)"
         )
         st.image(crop, caption=caption)
 
@@ -120,14 +121,14 @@ def render_crop_selector(
 
 
 def _extract_rect(canvas_result: Any) -> tuple[int, int, int, int] | None:
-    """Parse the canvas JSON and return the last drawn rectangle.
+    """Разбирает JSON холста и возвращает последний нарисованный прямоугольник.
 
     Args:
-        canvas_result: The object returned by ``st_canvas()``.
+        canvas_result: Объект, возвращённый ``st_canvas()``.
 
     Returns:
-        ``(x1, y1, x2, y2)`` in display-space pixels with ``x1 < x2, y1 < y2``,
-        or ``None`` if no rectangle has been drawn yet.
+        ``(x1, y1, x2, y2)`` в пикселях пространства холста с ``x1 < x2, y1 < y2``,
+        или ``None`` если прямоугольник ещё не нарисован.
     """
     if canvas_result is None or canvas_result.json_data is None:
         return None
@@ -137,16 +138,16 @@ def _extract_rect(canvas_result: Any) -> tuple[int, int, int, int] | None:
     if not rects:
         return None
 
-    # Use the most recently drawn rectangle
+    # Используем последний нарисованный прямоугольник
     obj = rects[-1]
 
     left: float = float(obj.get("left", 0))
     top: float = float(obj.get("top", 0))
-    # Apply scaleX/scaleY transforms (Fabric.js sometimes stores raw + scale)
+    # Применяем трансформации scaleX/scaleY (Fabric.js иногда хранит raw + scale)
     width: float = float(obj.get("width", 0)) * float(obj.get("scaleX", 1.0))
     height: float = float(obj.get("height", 0)) * float(obj.get("scaleY", 1.0))
 
-    # Normalise so x1 < x2 and y1 < y2 regardless of drawing direction
+    # Нормализуем: x1 < x2 и y1 < y2 независимо от направления рисования
     x1 = int(min(left, left + width))
     y1 = int(min(top, top + height))
     x2 = int(max(left, left + width))
@@ -160,15 +161,15 @@ def _fit_to_canvas(
     max_width: int,
     max_height: int,
 ) -> PILImage.Image:
-    """Resize *image* to fit within *(max_width, max_height)*, never upscaling.
+    """Изменяет размер *image* до *(max_width, max_height)* без увеличения.
 
     Args:
-        image: Source image.
-        max_width: Maximum display width in pixels.
-        max_height: Maximum display height in pixels.
+        image: Исходное изображение.
+        max_width: Максимальная ширина отображения в пикселях.
+        max_height: Максимальная высота отображения в пикселях.
 
     Returns:
-        A new PIL image at the target size, or the original if no resize needed.
+        Новое PIL-изображение нужного размера, или оригинал если изменение не нужно.
     """
     w, h = image.size
     scale = min(max_width / w, max_height / h, 1.0)

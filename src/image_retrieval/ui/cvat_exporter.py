@@ -1,18 +1,18 @@
-"""Streamlit widget: export selected crops to a CVAT task.
+"""Streamlit-виджет: экспорт выбранных кропов в задачу CVAT.
 
-Renders an expandable panel below the results grid.  When the user has
-selected at least one result via the checkboxes in
-:mod:`~image_retrieval.ui.results_viewer`, this panel shows:
+Отображает разворачиваемую панель под сеткой результатов.  Когда пользователь
+выбрал хотя бы один результат через чекбоксы в
+:mod:`~image_retrieval.ui.results_viewer`, панель показывает:
 
-* The count of selected crops and unique source images.
-* An optional task-name text input.
-* An **Export to CVAT** button that:
-  1. Loads each unique source image (local or S3).
-  2. Creates a new CVAT task with the configured label.
-  3. Uploads the images and pushes bbox annotations.
-  4. Displays a clickable link to the created task.
+* Количество выбранных кропов и уникальных исходных изображений.
+* Необязательное поле ввода имени задачи.
+* Кнопку **Экспортировать в CVAT**, которая:
+  1. Загружает каждое уникальное исходное изображение (локально или из S3).
+  2. Создаёт новую задачу CVAT с настроенной меткой.
+  3. Загружает изображения и отправляет bbox-аннотации.
+  4. Отображает кликабельную ссылку на созданную задачу.
 
-All CVAT interaction is delegated to :class:`~image_retrieval.cvat_client.CVATClient`.
+Всё взаимодействие с CVAT делегируется :class:`~image_retrieval.cvat_client.CVATClient`.
 """
 
 from __future__ import annotations
@@ -42,51 +42,51 @@ def render_cvat_exporter(
     cvat_config: CVATBlock,
     s3_client: S3Client | None = None,
 ) -> None:
-    """Render the CVAT export panel below the results grid.
+    """Отображает панель экспорта CVAT под сеткой результатов.
 
-    The panel is only shown when at least one result is selected.  It
-    collapses automatically to an expander so it doesn't crowd the page.
+    Панель отображается только при наличии хотя бы одного выбранного результата.
+    Автоматически сворачивается в expander, чтобы не загромождать страницу.
 
     Args:
-        all_results: The full list of search results (same as passed to
+        all_results: Полный список результатов поиска (тот же, что передаётся в
             :func:`~results_viewer.render_results`).
-        images_root: Base directory for resolving local image paths.
-        cvat_config: CVAT connection settings.
-        s3_client: Optional S3 client for ``s3://`` image paths.
+        images_root: Базовая директория для разрешения локальных путей изображений.
+        cvat_config: Настройки подключения к CVAT.
+        s3_client: Необязательный S3-клиент для ``s3://``-путей изображений.
     """
     selected_ids = get_selected_box_ids()
     if not selected_ids:
-        return  # Nothing selected — don't show the panel
+        return  # ничего не выбрано — панель не показываем
 
     selected_results = [r for r in all_results if r.box_id in selected_ids]
     n_images = len({r.image_path for r in selected_results})
 
     with st.expander(
-        f"📤 Export {len(selected_results)} crops "
-        f"from {n_images} image(s) to CVAT",
+        f"📤 Экспортировать {len(selected_results)} кропов "
+        f"из {n_images} изображения(-й) в CVAT",
         expanded=True,
     ):
         task_name = st.text_input(
-            label="Task name",
+            label="Имя задачи",
             placeholder="image-crop-retrieval-YYYYMMDD-HHMMSS",
             help=(
-                "Name for the new CVAT task.  Leave blank to auto-generate "
-                "from the current timestamp."
+                "Имя новой задачи CVAT.  Оставьте пустым для автогенерации "
+                "из текущей временной метки."
             ),
         )
 
         st.caption(
-            f"**CVAT URL:** `{cvat_config.url}`  \n"
-            f"**Label:** `{cvat_config.task_label}`"
+            f"**URL CVAT:** `{cvat_config.url}`  \n"
+            f"**Метка:** `{cvat_config.task_label}`"
             + (
-                f"  \n**Project ID:** `{cvat_config.project_id}`"
+                f"  \n**ID проекта:** `{cvat_config.project_id}`"
                 if cvat_config.project_id is not None
                 else ""
             )
         )
 
         if st.button(
-            "📤 Export to CVAT",
+            "📤 Экспортировать в CVAT",
             type="primary",
             use_container_width=True,
         ):
@@ -99,36 +99,35 @@ def render_cvat_exporter(
             )
 
 
-
 def _image_loader(
     image_path: str,
     images_root: Path,
     s3_client: S3Client | None,
 ) -> bytes:
-    """Load *image_path* and return raw JPEG bytes.
+    """Загружает *image_path* и возвращает сырые JPEG-байты.
 
-    Routes to S3 or local filesystem based on the URI scheme, exactly as
-    :func:`~results_viewer._load_crop` does for crops.
+    Маршрутизирует в S3 или локальную файловую систему по схеме URI — аналогично
+    тому, как :func:`~results_viewer._load_crop` маршрутизирует кропы.
 
     Args:
-        image_path: Absolute path, relative path (resolved against
-            *images_root*), or ``s3://bucket/key`` URI.
-        images_root: Base directory for relative paths.
-        s3_client: S3 client; required when ``image_path`` is an S3 URI.
+        image_path: Абсолютный путь, относительный путь (разрешается относительно
+            *images_root*) или ``s3://bucket/key``-URI.
+        images_root: Базовая директория для относительных путей.
+        s3_client: S3-клиент; обязателен для S3-URI.
 
     Returns:
-        JPEG-encoded image bytes.
+        JPEG-закодированные байты изображения.
 
     Raises:
-        FileNotFoundError: When a local image cannot be found.
-        RuntimeError: When an S3 URI is given but no client is available.
+        FileNotFoundError: Если локальное изображение не найдено.
+        RuntimeError: Если задан S3-URI, но клиент не предоставлен.
     """
     img: PILImage.Image
 
     if image_path.startswith("s3://"):
         if s3_client is None:
             raise RuntimeError(
-                f"Cannot load '{image_path}': S3 client not configured."
+                f"Невозможно загрузить '{image_path}': S3-клиент не настроен."
             )
         img = s3_client.load_image(image_path)
     else:
@@ -139,7 +138,7 @@ def _image_loader(
                 break
         else:
             raise FileNotFoundError(
-                f"Image not found: tried {[str(c) for c in candidates]}"
+                f"Изображение не найдено: проверены {[str(c) for c in candidates]}"
             )
 
     buf = io.BytesIO()
@@ -154,12 +153,12 @@ def _run_export(
     s3_client: S3Client | None,
     task_name: str,
 ) -> None:
-    """Orchestrate the full export flow with a progress spinner."""
+    """Оркестрирует полный процесс экспорта со спиннером прогресса."""
 
     def load_bytes(path: str) -> bytes:
         return _image_loader(path, images_root, s3_client)
 
-    with st.spinner("Preparing images…"):
+    with st.spinner("Подготовка изображений..."):
         try:
             export_data = prepare_export(
                 results=selected_results,
@@ -167,12 +166,12 @@ def _run_export(
                 task_name=task_name,
             )
         except Exception as exc:
-            st.error(f"Failed to load images: {exc}", icon="🚫")
-            logger.exception("Image load failed during CVAT export.")
+            st.error(f"Ошибка загрузки изображений: {exc}", icon="🚫")
+            logger.exception("Ошибка загрузки изображений при экспорте в CVAT.")
             return
 
     with st.spinner(
-        f"Uploading {len(export_data.images)} image(s) to CVAT…"
+        f"Загрузка {len(export_data.images)} изображения(-й) в CVAT..."
     ):
         try:
             client = CVATClient(cvat_config)
@@ -182,17 +181,17 @@ def _run_export(
                 annotations=export_data.annotations,
             )
         except Exception as exc:
-            st.error(f"CVAT export failed: {exc}", icon="🚫")
-            logger.exception("CVAT export failed.")
+            st.error(f"Ошибка экспорта в CVAT: {exc}", icon="🚫")
+            logger.exception("Ошибка экспорта в CVAT.")
             return
 
     st.success(
-        f"✅ CVAT task created: **{result.annotation_count}** annotations "
-        f"across **{result.image_count}** image(s).",
+        f"✅ Задача CVAT создана: **{result.annotation_count}** аннотаций "
+        f"в **{result.image_count}** изображении(-ях).",
         icon="✅",
     )
     st.link_button(
-        label="🔗 Open task in CVAT",
+        label="🔗 Открыть задачу в CVAT",
         url=result.task_url,
         use_container_width=True,
     )

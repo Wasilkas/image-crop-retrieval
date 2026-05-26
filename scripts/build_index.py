@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""CLI script: build a FAISS index from an annotated image dataset.
+"""CLI-скрипт: построение FAISS-индекса из аннотированного датасета изображений.
 
-Supports two modes: **local** and **S3**.
+Поддерживает два режима: **local** и **s3**.
 
-Local mode
-----------
-Reads annotations from a local CSV/Parquet file and images from a local
-directory.  Writes the index to ``datasets/{dataset_name}/``.
+Локальный режим
+---------------
+Читает аннотации из локального CSV/Parquet-файла, изображения — из локальной
+директории.  Записывает индекс в ``datasets/{dataset_name}/``.
 
 ::
 
@@ -16,12 +16,11 @@ directory.  Writes the index to ``datasets/{dataset_name}/``.
         --checkpoint   /models/encoder.pth \\
         --dataset-name my_dataset
 
-S3 mode
--------
-Finds the latest ``split_<date>.csv`` under the given S3 dataset prefix,
-downloads it, fetches images from S3 (via the ``s3_image_path`` column),
-builds the index, and uploads ``index.faiss`` + ``metadata.parquet`` back
-to S3.
+S3-режим
+--------
+Находит последний ``split_<date>.csv`` под заданным S3-префиксом датасета,
+скачивает его, загружает изображения из S3 (через колонку ``s3_image_path``),
+строит индекс и загружает ``index.faiss`` + ``metadata.parquet`` обратно в S3.
 
 ::
 
@@ -30,19 +29,19 @@ to S3.
         --dataset   my_dataset \\
         --checkpoint /models/encoder.pth
 
-Column requirements
--------------------
-*Local mode* — annotations must contain: ``image_path, x1, y1, x2, y2``.
+Требования к колонкам
+---------------------
+*Локальный режим* — аннотации должны содержать: ``image_path, x1, y1, x2, y2``.
 
-*S3 mode* — split CSV must contain: ``s3_image_path, x1, y1, x2, y2``.
-The ``s3_image_path`` values must be valid ``s3://bucket/key`` URIs.
+*S3-режим* — split CSV должен содержать: ``s3_image_path, x1, y1, x2, y2``.
+Значения ``s3_image_path`` должны быть валидными ``s3://bucket/key``-URI.
 
-A ``box_id`` column is auto-generated if absent in either mode.
+Колонка ``box_id`` автоматически генерируется если отсутствует в обоих режимах.
 
-State-dict checkpoints
-----------------------
-Pass ``--model-module module.path:ClassName`` to use a state-dict checkpoint
-(in either mode)::
+State-dict-чекпоинты
+--------------------
+Передайте ``--model-module module.path:ClassName`` для state-dict-чекпоинта
+(в любом режиме)::
 
     uv run python scripts/build_index.py s3 \\
         --bucket    my-bucket \\
@@ -51,8 +50,8 @@ Pass ``--model-module module.path:ClassName`` to use a state-dict checkpoint
         --model-module mypackage.models:MyEncoder
 
 .. warning::
-    ``torch.load(weights_only=False)`` executes arbitrary pickle code.
-    Only load checkpoints from **trusted sources**.
+    ``torch.load(weights_only=False)`` выполняет произвольный pickle-код.
+    Загружайте чекпоинты только из **доверенных источников**.
 """
 
 from __future__ import annotations
@@ -79,21 +78,21 @@ logger = logging.getLogger(__name__)
 
 
 def _add_shared_args(p: argparse.ArgumentParser) -> None:
-    """Add embedder / tuning arguments shared by both modes."""
+    """Добавляет аргументы эмбеддера, общие для обоих режимов."""
     p.add_argument(
         "--checkpoint",
         required=True,
         type=Path,
         metavar="FILE",
-        help="Path to the SSL model checkpoint (.pt / .pth)",
+        help="Путь к чекпоинту SSL-модели (.pt / .pth)",
     )
     p.add_argument(
         "--model-module",
         default=None,
         metavar="MODULE:CLASS",
         help=(
-            "For state-dict checkpoints: 'module.path:ClassName'.  "
-            "Example: mypackage.models:ResNetEncoder"
+            "Для state-dict-чекпоинтов: 'module.path:ClassName'.  "
+            "Пример: mypackage.models:ResNetEncoder"
         ),
     )
     p.add_argument(
@@ -101,12 +100,12 @@ def _add_shared_args(p: argparse.ArgumentParser) -> None:
         type=int,
         default=64,
         metavar="N",
-        help="Number of crops per forward pass",
+        help="Количество кропов за один forward pass",
     )
     p.add_argument(
         "--device",
         default="cpu",
-        help="PyTorch device string",
+        help="Строка устройства PyTorch",
     )
     p.add_argument(
         "--input-size",
@@ -114,21 +113,21 @@ def _add_shared_args(p: argparse.ArgumentParser) -> None:
         nargs=2,
         default=[224, 224],
         metavar=("H", "W"),
-        help="Crop size fed to the model (height width)",
+        help="Размер кропа для подачи в модель (высота ширина)",
     )
 
 
 def _build_parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
         prog="build_index",
-        description="Build a FAISS index for image-crop-retrieval.",
+        description="Построение FAISS-индекса для image-crop-retrieval.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     sub = root.add_subparsers(dest="mode", required=True)
 
     local = sub.add_parser(
         "local",
-        help="Build from a local CSV/Parquet + local images directory.",
+        help="Построение из локального CSV/Parquet + локальной директории изображений.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     local.add_argument(
@@ -136,64 +135,67 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         type=Path,
         metavar="FILE",
-        help="CSV or Parquet with columns: image_path, x1, y1, x2, y2",
+        help="CSV или Parquet с колонками: image_path, x1, y1, x2, y2",
     )
     local.add_argument(
         "--images-root",
         required=True,
         type=Path,
         metavar="DIR",
-        help="Root directory for images referenced in --annotations",
+        help="Корневая директория изображений из --annotations",
     )
     local.add_argument(
         "--dataset-name",
         required=True,
         metavar="NAME",
-        help="Name of the output dataset sub-directory",
+        help="Имя выходной поддиректории датасета",
     )
     local.add_argument(
         "--datasets-dir",
         type=Path,
         default=Path("datasets"),
         metavar="DIR",
-        help="Root datasets directory (output: DATASETS_DIR/DATASET_NAME/)",
+        help="Корневая директория датасетов (вывод: DATASETS_DIR/DATASET_NAME/)",
     )
     _add_shared_args(local)
 
     s3p = sub.add_parser(
         "s3",
-        help="Build from S3: reads latest split_<date>.csv, writes index to S3.",
+        help=(
+            "Построение из S3: читает последний split_<date>.csv, "
+            "записывает индекс в S3."
+        ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     s3p.add_argument(
         "--bucket",
         required=True,
         metavar="BUCKET",
-        help="S3 bucket name",
+        help="Имя S3-бакета",
     )
     s3p.add_argument(
         "--dataset",
         required=True,
         metavar="NAME",
-        help="Dataset name (prefix within the bucket)",
+        help="Имя датасета (префикс внутри бакета)",
     )
     s3p.add_argument(
         "--prefix",
         default="",
         metavar="PREFIX",
-        help="Key prefix under which datasets are stored (e.g. 'datasets/')",
+        help="Префикс ключей для хранения датасетов (напр. 'datasets/')",
     )
     s3p.add_argument(
         "--region",
         default="us-east-1",
         metavar="REGION",
-        help="AWS region",
+        help="Регион AWS",
     )
     s3p.add_argument(
         "--endpoint-url",
         default=None,
         metavar="URL",
-        help="Custom S3-compatible endpoint (e.g. for MinIO)",
+        help="Кастомный S3-совместимый endpoint (напр. для MinIO)",
     )
     s3p.add_argument(
         "--image-cache-dir",
@@ -201,8 +203,9 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         metavar="DIR",
         help=(
-            "Local directory for caching downloaded images during indexing.  "
-            "Defaults to a temp directory that is cleaned up after the run."
+            "Локальная директория для кэширования скачанных изображений "
+            "во время индексации.  По умолчанию — временная директория, "
+            "удаляемая после завершения."
         ),
     )
     _add_shared_args(s3p)
@@ -211,22 +214,23 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _resolve_model_class(module_spec: str) -> type[nn.Module]:
-    """Import and return an ``nn.Module`` subclass from ``'module:Class'``.
+    """Импортирует и возвращает подкласс ``nn.Module`` из ``'module:Class'``.
 
     Raises:
-        ValueError: If *module_spec* does not contain ``:``.
-        TypeError: If the resolved object is not an ``nn.Module`` subclass.
+        ValueError: Если *module_spec* не содержит ``:``.
+        TypeError: Если разрешённый объект не является подклассом ``nn.Module``.
     """
     if ":" not in module_spec:
         raise ValueError(
-            f"--model-module must be 'module.path:ClassName', got: '{module_spec}'"
+            "--model-module должен быть 'module.path:ClassName', "
+            f"получено: '{module_spec}'"
         )
     module_path, class_name = module_spec.rsplit(":", 1)
     mod = importlib.import_module(module_path)
     cls = getattr(mod, class_name)
     if not (isinstance(cls, type) and issubclass(cls, nn.Module)):
         raise TypeError(
-            f"'{module_spec}' resolved to {cls!r}, not an nn.Module subclass."
+            f"'{module_spec}' разрешился в {cls!r}, а не в подкласс nn.Module."
         )
     return cls
 
@@ -234,53 +238,54 @@ def _resolve_model_class(module_spec: str) -> type[nn.Module]:
 def _validate_and_fill_box_id(
     df: pd.DataFrame,
     required: set[str],
-    context: str = "Annotations",
+    context: str = "Аннотации",
 ) -> pd.DataFrame:
-    """Raise ValueError if required columns are missing; auto-fill box_id."""
+    """Поднимает ValueError при отсутствии обязательных колонок;
+    автозаполняет box_id."""
     missing = required - set(df.columns)
     if missing:
-        raise ValueError(f"{context} missing columns: {sorted(missing)}")
+        raise ValueError(f"{context}: отсутствуют колонки: {sorted(missing)}")
     if "box_id" not in df.columns:
         df["box_id"] = [f"box_{i}" for i in range(len(df))]
     return df.reset_index(drop=True)
 
 
 def _load_annotations_local(path: Path) -> pd.DataFrame:
-    """Load a local CSV or Parquet annotations file.
+    """Загружает локальный CSV или Parquet файл аннотаций.
 
-    Required columns: ``image_path, x1, y1, x2, y2``.
-    ``box_id`` is auto-generated if absent.
+    Обязательные колонки: ``image_path, x1, y1, x2, y2``.
+    ``box_id`` автогенерируется если отсутствует.
 
     Returns:
-        Validated DataFrame with ``image_path`` pointing to local files.
+        Валидированный DataFrame с ``image_path``, указывающим на локальные файлы.
     """
     if not path.exists():
-        raise FileNotFoundError(f"Annotations file not found: {path}")
+        raise FileNotFoundError(f"Файл аннотаций не найден: {path}")
 
     if path.suffix.lower() == ".parquet":
         df = pd.read_parquet(path)
     else:
         df = pd.read_csv(path)
     df = _validate_and_fill_box_id(df, {"image_path", "x1", "y1", "x2", "y2"})
-    logger.info("Loaded %d local annotations from '%s'.", len(df), path)
+    logger.info("Загружено %d локальных аннотаций из '%s'.", len(df), path)
     return df
 
 
 def _load_annotations_s3(
-    s3_client: object,  # S3Client, typed loosely to avoid circular
+    s3_client: object,  # S3Client, слабая типизация во избежание цикла
     dataset_name: str,
     tmp_dir: Path,
 ) -> pd.DataFrame:
-    """Download the latest ``split_<date>.csv`` from S3 and load it.
+    """Скачивает последний ``split_<date>.csv`` из S3 и загружает его.
 
-    Required columns in the CSV: ``s3_image_path, x1, y1, x2, y2``.
+    Обязательные колонки CSV: ``s3_image_path, x1, y1, x2, y2``.
 
-    The ``s3_image_path`` values are copied to ``image_path`` so the metadata
-    stored in the index uses ``s3://`` URIs — the app detects these at query
-    time to route image loading through S3.
+    Значения ``s3_image_path`` копируются в ``image_path``, чтобы метаданные
+    индекса хранили ``s3://``-URI — приложение обнаруживает их при запросе
+    и маршрутизирует загрузку через S3.
 
     Returns:
-        Validated DataFrame ready for :func:`_embed_all_s3`.
+        Валидированный DataFrame, готовый для :func:`_embed_all_s3`.
     """
     from image_retrieval.s3_client import S3Client
 
@@ -289,13 +294,13 @@ def _load_annotations_s3(
     split_key = s3_client.find_latest_split_key(dataset_name)
     if split_key is None:
         raise FileNotFoundError(
-            f"No split_<date>.csv found for dataset '{dataset_name}' in bucket "
-            f"'{s3_client._config.bucket}'."
+            f"Файлы split_<date>.csv не найдены для датасета '{dataset_name}' "
+            f"в бакете '{s3_client._config.bucket}'."
         )
 
     local_csv = tmp_dir / "annotations.csv"
     logger.info(
-        "Downloading annotations: s3://%s/%s", s3_client._config.bucket, split_key
+        "Скачивание аннотаций: s3://%s/%s", s3_client._config.bucket, split_key
     )
     s3_client.download_file(split_key, local_csv)
 
@@ -307,12 +312,14 @@ def _load_annotations_s3(
         {"s3_image_path", "x1", "y1", "x2", "y2"},
         f"Split CSV '{split_key}'",
     )
-    logger.info("Loaded %d annotations from S3 split '%s'.", len(df), split_key)
+    logger.info(
+        "Загружено %d аннотаций из S3-split '%s'.", len(df), split_key
+    )
     return df
 
 
 def _open_local(path: Path) -> PILImage.Image:
-    """Open a local image file as an RGB PIL Image."""
+    """Открывает локальный файл изображения как RGB PIL Image."""
     return PILImage.open(path).convert("RGB")
 
 
@@ -322,9 +329,10 @@ def _embed_all_local(
     embedder: TorchEmbedder,
     batch_size: int,
 ) -> np.ndarray:
-    """Crop + embed using local images.
+    """Вырезает кропы и вычисляет эмбеддинги для локальных изображений.
 
-    Rows where the image cannot be loaded are zero-filled and warned.
+    Строки, для которых не удаётся загрузить изображение, заполняются нулями
+    с предупреждением.
     """
     return _run_embedding_loop(
         df=df,
@@ -342,11 +350,12 @@ def _embed_all_s3(
     batch_size: int,
     cache_dir: Path,
 ) -> np.ndarray:
-    """Crop + embed S3 images, caching each unique image to *cache_dir*.
+    """Вырезает кропы и вычисляет эмбеддинги для S3-изображений
+    с кэшированием в *cache_dir*.
 
-    Each unique ``s3_image_path`` is downloaded once and kept in *cache_dir*
-    for the duration of the run.  For 100K boxes from ~10K images this avoids
-    re-downloading the same image for every box that shares it.
+    Каждый уникальный ``s3_image_path`` скачивается один раз и хранится в
+    *cache_dir* на время выполнения.  Для 100K боксов из ~10K изображений
+    это исключает повторное скачивание одного изображения для каждого бокса.
     """
     from image_retrieval.s3_client import S3Client
 
@@ -370,7 +379,7 @@ def _embed_all_s3(
             batch_size=batch_size,
         )
     finally:
-        # Clean up temp image files
+        # Очищаем временные файлы изображений
         for tmp_path in local_cache.values():
             with contextlib.suppress(Exception):
                 tmp_path.unlink(missing_ok=True)
@@ -383,18 +392,18 @@ def _run_embedding_loop(
     embedder: TorchEmbedder,
     batch_size: int,
 ) -> np.ndarray:
-    """Core embedding loop shared by local and S3 modes.
+    """Основной цикл эмбеддинга, общий для локального и S3-режимов.
 
     Args:
-        df: Annotations DataFrame.
-        load_image_fn: Callable that takes an image path/URI string and returns
-            a PIL Image (RGB).  May raise on failure.
-        image_col: Name of the column in *df* that holds image paths/URIs.
-        embedder: Embedder instance.
-        batch_size: Crops per forward pass.
+        df: DataFrame аннотаций.
+        load_image_fn: Callable, принимающий строку пути/URI изображения и
+            возвращающий PIL Image (RGB).  Может бросать исключения при ошибке.
+        image_col: Имя колонки в *df* с путями/URI изображений.
+        embedder: Экземпляр эмбеддера.
+        batch_size: Количество кропов за один forward pass.
 
     Returns:
-        Float32 ndarray of shape ``(len(df), embedding_dim)``.
+        float32-ndarray формы ``(len(df), embedding_dim)``.
     """
     from collections.abc import Callable
 
@@ -404,7 +413,7 @@ def _run_embedding_loop(
     all_vecs: list[np.ndarray] = []
     placeholder: PILImage.Image | None = None
 
-    progress = tqdm(total=len(df), desc="Embedding boxes", unit="box")
+    progress = tqdm(total=len(df), desc="Вычисление эмбеддингов", unit="бокс")
     for start in range(0, len(df), batch_size):
         batch = df.iloc[start : start + batch_size]
         crops: list[PILImage.Image] = []
@@ -422,7 +431,7 @@ def _run_embedding_loop(
                 valid.append(True)
             except Exception:
                 logger.warning(
-                    "Skipping box (image='%s'): could not load/crop.",
+                    "Пропуск бокса (image='%s'): не удалось загрузить/вырезать.",
                     row[image_col],
                     exc_info=True,
                 )
@@ -444,12 +453,12 @@ def _run_embedding_loop(
 
 
 def _build_faiss_index(embeddings: np.ndarray) -> faiss.IndexFlatIP:
-    """Create and populate an IndexFlatIP (in-place L2-normalise first)."""
+    """Создаёт и заполняет IndexFlatIP (предварительно L2-нормализуя векторы)."""
     faiss.normalize_L2(embeddings)
     _, d = embeddings.shape
     index = faiss.IndexFlatIP(d)
     index.add(embeddings)
-    logger.info("Built FAISS index: %d vectors, dim=%d.", index.ntotal, d)
+    logger.info("Построен FAISS-индекс: %d векторов, dim=%d.", index.ntotal, d)
     return index
 
 
@@ -459,7 +468,7 @@ def _write_outputs_local(
     out_dir: Path,
     images_root: Path,
 ) -> None:
-    """Write index, metadata, and images_root atomically to *out_dir*."""
+    """Атомарно записывает индекс, метаданные и images_root в *out_dir*."""
     index_path = out_dir / "index.faiss"
     metadata_path = out_dir / "metadata.parquet"
 
@@ -481,7 +490,9 @@ def _write_outputs_local(
         tmp_meta.replace(metadata_path)
         tmp_meta = None
 
-        (out_dir / "images_root.txt").write_text(str(images_root), encoding="utf-8")
+        (out_dir / "images_root.txt").write_text(
+            str(images_root), encoding="utf-8"
+        )
     except Exception:
         if tmp_index is not None:
             tmp_index.unlink(missing_ok=True)
@@ -496,7 +507,8 @@ def _write_outputs_s3(
     s3_client: object,
     dataset_name: str,
 ) -> None:
-    """Serialize index and metadata to temp files then upload to S3 atomically."""
+    """Сериализует индекс и метаданные во временные файлы,
+    затем атомарно загружает в S3."""
     from image_retrieval.s3_client import S3Client
 
     assert isinstance(s3_client, S3Client)
@@ -510,15 +522,19 @@ def _write_outputs_s3(
         faiss.write_index(index, str(index_tmp))
         df.to_parquet(meta_tmp, index=False)
 
-        logger.info("Uploading index to S3…")
-        s3_client.upload_file_atomic(index_tmp, s3_client.index_key(dataset_name))
+        logger.info("Загрузка индекса в S3...")
+        s3_client.upload_file_atomic(
+            index_tmp, s3_client.index_key(dataset_name)
+        )
 
-        logger.info("Uploading metadata to S3…")
-        s3_client.upload_file_atomic(meta_tmp, s3_client.metadata_key(dataset_name))
+        logger.info("Загрузка метаданных в S3...")
+        s3_client.upload_file_atomic(
+            meta_tmp, s3_client.metadata_key(dataset_name)
+        )
 
 
 def main() -> int:
-    """Entry point; returns an exit code."""
+    """Точка входа; возвращает код выхода."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -543,18 +559,20 @@ def main() -> int:
         df = _load_annotations_local(args.annotations)
 
         logger.info(
-            "Starting embedding pass (batch_size=%d, device=%s)…",
+            "Начало прохода эмбеддинга (batch_size=%d, device=%s)...",
             args.batch_size, args.device,
         )
-        embeddings = _embed_all_local(df, args.images_root, embedder, args.batch_size)
+        embeddings = _embed_all_local(
+            df, args.images_root, embedder, args.batch_size
+        )
         index = _build_faiss_index(embeddings)
 
         out_dir: Path = args.datasets_dir / args.dataset_name
         out_dir.mkdir(parents=True, exist_ok=True)
         _write_outputs_local(index, df, out_dir, args.images_root.resolve())
 
-        logger.info("✓ index    → %s", out_dir / "index.faiss")
-        logger.info("✓ metadata → %s", out_dir / "metadata.parquet")
+        logger.info("✓ индекс    → %s", out_dir / "index.faiss")
+        logger.info("✓ метаданные → %s", out_dir / "metadata.parquet")
         return 0
 
     from image_retrieval.config import S3Config
@@ -568,7 +586,7 @@ def main() -> int:
     )
     s3_client = S3Client(s3_config)
 
-    # Use a managed temp dir unless the user specified a persistent cache dir
+    # Используем управляемую temp-директорию если постоянный кэш не указан
     if args.image_cache_dir is not None:
         cache_dir = args.image_cache_dir
         _tmp_mgr = None
@@ -578,22 +596,28 @@ def main() -> int:
 
     try:
         with tempfile.TemporaryDirectory() as anno_tmp:
-            df = _load_annotations_s3(s3_client, args.dataset, Path(anno_tmp))
+            df = _load_annotations_s3(
+                s3_client, args.dataset, Path(anno_tmp)
+            )
 
         logger.info(
-            "Starting S3 embedding pass (batch_size=%d, device=%s)…",
+            "Начало S3-прохода эмбеддинга (batch_size=%d, device=%s)...",
             args.batch_size, args.device,
         )
-        embeddings = _embed_all_s3(df, s3_client, embedder, args.batch_size, cache_dir)
+        embeddings = _embed_all_s3(
+            df, s3_client, embedder, args.batch_size, cache_dir
+        )
         index = _build_faiss_index(embeddings)
 
         _write_outputs_s3(index, df, s3_client, args.dataset)
 
         logger.info(
-            "✓ index    → s3://%s/%s", args.bucket, s3_client.index_key(args.dataset)
+            "✓ индекс    → s3://%s/%s",
+            args.bucket, s3_client.index_key(args.dataset),
         )
         logger.info(
-            "✓ metadata → s3://%s/%s", args.bucket, s3_client.metadata_key(args.dataset)
+            "✓ метаданные → s3://%s/%s",
+            args.bucket, s3_client.metadata_key(args.dataset),
         )
     finally:
         if _tmp_mgr is not None:

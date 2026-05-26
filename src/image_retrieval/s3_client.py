@@ -1,20 +1,19 @@
-"""Low-level S3 utilities for the image-crop-retrieval project.
+"""Низкоуровневые S3-утилиты для проекта image-crop-retrieval.
 
-This module provides a thin, typed wrapper around ``boto3`` that handles:
+Модуль предоставляет тонкую типизированную обёртку над ``boto3`` для:
 
-* Discovering datasets by listing bucket prefixes.
-* Finding the **latest** ``split_<date>.csv`` annotation file under a dataset
-  prefix (lexicographic sort on the date portion is equivalent to chronological
-  sort for ISO-8601 dates: ``YYYY-MM-DD``).
-* Downloading / uploading index artefacts (``index.faiss``,
-  ``metadata.parquet``) between S3 and a local cache directory.
-* Loading images from ``s3://bucket/key`` URIs on-demand for result display.
+* Обнаружения датасетов через перечисление префиксов бакета.
+* Поиска **последнего** файла ``split_<date>.csv`` по дате в имени файла
+  (лексикографическая сортировка по ISO-8601 дате эквивалентна хронологической).
+* Скачивания / загрузки артефактов индекса (``index.faiss``, ``metadata.parquet``)
+  между S3 и локальным кэшем.
+* Загрузки изображений из ``s3://bucket/key``-URI по запросу для отображения.
 
-Credentials are resolved via the standard boto3 credential chain:
-environment variables (``AWS_ACCESS_KEY_ID``, ``AWS_SECRET_ACCESS_KEY``),
-``~/.aws/credentials``, or an IAM instance / task role.
+Учётные данные разрешаются через стандартную цепочку boto3:
+переменные среды (``AWS_ACCESS_KEY_ID``, ``AWS_SECRET_ACCESS_KEY``),
+``~/.aws/credentials`` или IAM-роль инстанса / задачи.
 
-For S3-compatible stores (MinIO, Yandex Cloud Object Storage, …) set
+Для S3-совместимых хранилищ (MinIO, Yandex Cloud Object Storage и др.) укажите
 ``S3Config.endpoint_url``.
 """
 
@@ -31,32 +30,32 @@ from typing import TYPE_CHECKING
 import boto3
 from PIL import Image as PILImage
 
-from .config import S3Block as S3Config  # S3Config alias kept for clarity
+from .config import S3Block as S3Config  # псевдоним S3Config оставлен для ясности
 
 if TYPE_CHECKING:
-    # boto3-stubs[s3] is a dev dep; import only for type checking
+    # boto3-stubs[s3] — dev-зависимость; импорт только для проверки типов
     from mypy_boto3_s3 import S3Client as BotoS3Client
 
 logger = logging.getLogger(__name__)
 
-# Matches filenames like split_2024-01-15.csv or split_20240115.csv
+# Совпадает с именами файлов вида split_2024-01-15.csv или split_20240115.csv
 _SPLIT_RE = re.compile(r"split_(\d{4}-?\d{2}-?\d{2})\.csv$")
 
-# Matches s3://bucket/key URIs
+# Совпадает с URI вида s3://bucket/key
 _S3_URI_RE = re.compile(r"^s3://([^/]+)/(.+)$")
 
 
 class S3Client:
-    """Typed wrapper around ``boto3`` for image-crop-retrieval S3 operations.
+    """Типизированная обёртка над ``boto3`` для S3-операций image-crop-retrieval.
 
     Args:
-        config: S3 connection and bucket parameters.
+        config: Параметры подключения к S3.
     """
 
     def __init__(self, config: S3Config) -> None:
         self._config = config
-        # Pass kwargs explicitly so mypy can match the typed "s3" overload in
-        # boto3-stubs instead of falling back to the unresolvable **kwargs path.
+        # Явная передача kwargs позволяет mypy использовать типизированную перегрузку
+        # "s3" из boto3-stubs вместо непреодолимого пути через **kwargs.
         self._s3: BotoS3Client = boto3.client(
             "s3",
             region_name=config.region,
@@ -64,15 +63,14 @@ class S3Client:
         )
 
     def list_dataset_names(self) -> list[str]:
-        """Return names of dataset sub-prefixes under ``config.prefix``.
+        """Возвращает имена датасетов-поддиректорий под ``config.prefix``.
 
-        Datasets are identified as *common prefixes* (virtual directories)
-        directly under the configured prefix.  A dataset named ``"my_dataset"``
-        must correspond to a prefix ``{config.prefix}my_dataset/`` in the
-        bucket.
+        Датасеты определяются как *общие префиксы* (виртуальные директории)
+        непосредственно под настроенным префиксом.  Датасет ``"my_dataset"``
+        должен соответствовать префиксу ``{config.prefix}my_dataset/`` в бакете.
 
         Returns:
-            Sorted list of dataset name strings.
+            Отсортированный список имён датасетов.
         """
         response = self._s3.list_objects_v2(
             Bucket=self._config.bucket,
@@ -83,25 +81,25 @@ class S3Client:
         names: list[str] = []
         for entry in common_prefixes:
             full_prefix: str = entry.get("Prefix", "")
-            # Strip the parent prefix and trailing slash to get the name
+            # Убираем родительский префикс и завершающий слэш для получения имени
             name = full_prefix.removeprefix(self._config.prefix).rstrip("/")
             if name:
                 names.append(name)
         return sorted(names)
 
     def find_latest_split_key(self, dataset_name: str) -> str | None:
-        """Find the S3 key of the most recent ``split_<date>.csv`` file.
+        """Находит S3-ключ самого свежего файла ``split_<date>.csv``.
 
-        Files are compared by the date string in their filename.  ISO-8601
-        dates (``YYYY-MM-DD``) sort lexicographically in chronological order,
-        so no date parsing is needed.
+        Файлы сравниваются по строке даты в имени.  ISO-8601-даты (``YYYY-MM-DD``)
+        сортируются лексикографически в хронологическом порядке, поэтому
+        разбор дат не требуется.
 
         Args:
-            dataset_name: Name of the dataset sub-prefix.
+            dataset_name: Имя поддиректории датасета.
 
         Returns:
-            The full S3 key of the latest split file, or ``None`` if no split
-            files exist under the dataset prefix.
+            Полный S3-ключ самого свежего split-файла, или ``None`` если таких
+            файлов нет под префиксом датасета.
         """
         prefix = self._config.dataset_prefix(dataset_name)
         response = self._s3.list_objects_v2(
@@ -110,20 +108,20 @@ class S3Client:
         )
         contents = response.get("Contents") or []
 
-        candidates: list[tuple[str, str]] = []  # (date_str, key)
+        candidates: list[tuple[str, str]] = []  # (строка_даты, ключ)
         for obj in contents:
             key: str = obj.get("Key", "")
             filename = key.split("/")[-1]
             match = _SPLIT_RE.match(filename)
             if match:
-                # Normalise by stripping dashes so both YYYYMMDD and YYYY-MM-DD
-                # compare correctly together
+                # Нормализуем: убираем тире, чтобы YYYYMMDD и YYYY-MM-DD
+                # корректно сравнивались между собой
                 date_str = match.group(1).replace("-", "")
                 candidates.append((date_str, key))
 
         if not candidates:
             logger.warning(
-                "No split_<date>.csv files found under s3://%s/%s",
+                "Файлы split_<date>.csv не найдены под s3://%s/%s",
                 self._config.bucket,
                 prefix,
             )
@@ -131,67 +129,65 @@ class S3Client:
 
         candidates.sort(key=lambda t: t[0], reverse=True)
         latest_key = candidates[0][1]
-        logger.info("Latest split for '%s': %s", dataset_name, latest_key)
+        logger.info("Последний split для '%s': %s", dataset_name, latest_key)
         return latest_key
 
     def download_file(self, s3_key: str, local_path: Path) -> None:
-        """Download *s3_key* from the configured bucket to *local_path*.
+        """Скачивает *s3_key* из настроенного бакета в *local_path*.
 
-        The parent directory is created automatically.
+        Родительская директория создаётся автоматически.
 
         Args:
-            s3_key: Object key within ``config.bucket``.
-            local_path: Destination path on the local filesystem.
+            s3_key: Ключ объекта внутри ``config.bucket``.
+            local_path: Путь назначения в локальной файловой системе.
         """
         local_path.parent.mkdir(parents=True, exist_ok=True)
         logger.debug(
-            "Downloading s3://%s/%s → %s", self._config.bucket, s3_key, local_path
+            "Скачивание s3://%s/%s → %s", self._config.bucket, s3_key, local_path
         )
         self._s3.download_file(self._config.bucket, s3_key, str(local_path))
 
     def download_uri(self, uri: str, local_path: Path) -> None:
-        """Download an ``s3://bucket/key`` URI (or bare key) to *local_path*.
+        """Скачивает ``s3://bucket/key``-URI (или голый ключ) в *local_path*.
 
-        Unlike :meth:`download_file` this method parses the bucket and key
-        from the URI, so it works with URIs that reference a different bucket
-        than ``config.bucket`` (e.g. model checkpoints stored in a separate
-        bucket).
+        В отличие от :meth:`download_file`, разбирает бакет и ключ из URI,
+        поэтому работает с URI, ссылающимися на другой бакет (напр. чекпоинты
+        модели из отдельного бакета).
 
-        The parent directory is created automatically.
+        Родительская директория создаётся автоматически.
 
         Args:
-            uri: ``s3://bucket/key`` URI or bare key relative to
-                ``config.bucket``.
-            local_path: Destination path on the local filesystem.
+            uri: ``s3://bucket/key``-URI или голый ключ относительно ``config.bucket``.
+            local_path: Путь назначения в локальной файловой системе.
         """
         bucket, key = self._parse_uri(uri)
         local_path.parent.mkdir(parents=True, exist_ok=True)
-        logger.debug("Downloading %s → %s", uri, local_path)
+        logger.debug("Скачивание %s → %s", uri, local_path)
         self._s3.download_file(bucket, key, str(local_path))
 
     def upload_file(self, local_path: Path, s3_key: str) -> None:
-        """Upload *local_path* to *s3_key* in the configured bucket.
+        """Загружает *local_path* в *s3_key* настроенного бакета.
 
         Args:
-            local_path: Source file on the local filesystem.
-            s3_key: Destination object key within ``config.bucket``.
+            local_path: Исходный файл в локальной файловой системе.
+            s3_key: Ключ объекта назначения внутри ``config.bucket``.
         """
         logger.debug(
-            "Uploading %s → s3://%s/%s", local_path, self._config.bucket, s3_key
+            "Загрузка %s → s3://%s/%s", local_path, self._config.bucket, s3_key
         )
         self._s3.upload_file(str(local_path), self._config.bucket, s3_key)
 
     def upload_file_atomic(self, local_path: Path, s3_key: str) -> None:
-        """Upload *local_path* to a ``*.tmp`` key then rename to *s3_key*.
+        """Загружает *local_path* во временный ``*.tmp``-ключ,
+        затем переименовывает в *s3_key*.
 
-        S3 does not support atomic rename natively, but the *copy + delete*
-        pattern ensures the target key is never in a partially-written state
-        when readers poll the bucket.  The window between the upload completing
-        and the copy/delete completing is short.
+        S3 не поддерживает атомарный rename нативно, но шаблон *copy + delete*
+        гарантирует: читатели никогда не видят частично записанный объект.
+        Окно между завершением загрузки и завершением copy/delete минимально.
 
         Args:
-            local_path: Source file.
-            s3_key: Final destination key in the configured bucket.
+            local_path: Исходный файл.
+            s3_key: Итоговый ключ в настроенном бакете.
         """
         tmp_key = s3_key + ".tmp"
         self.upload_file(local_path, tmp_key)
@@ -201,24 +197,26 @@ class S3Client:
             Key=s3_key,
         )
         self._s3.delete_object(Bucket=self._config.bucket, Key=tmp_key)
-        logger.debug("Atomic upload complete: s3://%s/%s", self._config.bucket, s3_key)
+        logger.debug(
+            "Атомарная загрузка завершена: s3://%s/%s", self._config.bucket, s3_key
+        )
 
     def load_image(self, uri: str) -> PILImage.Image:
-        """Load a PIL Image from an S3 URI or bare key.
+        """Загружает PIL-изображение из S3-URI или голого ключа.
 
-        Supports two URI formats:
-        * ``s3://bucket/path/to/image.jpg`` — explicit bucket in URI.
-        * ``path/to/image.jpg`` — key relative to ``config.bucket``.
+        Поддерживает два формата URI:
+        * ``s3://bucket/path/to/image.jpg`` — явный бакет в URI.
+        * ``path/to/image.jpg`` — ключ относительно ``config.bucket``.
 
         Args:
-            uri: S3 URI or bare key string.
+            uri: S3-URI или строка голого ключа.
 
         Returns:
-            RGB PIL image.
+            RGB PIL-изображение.
 
         Raises:
-            ValueError: If the URI cannot be parsed.
-            botocore.exceptions.ClientError: If the object does not exist.
+            ValueError: Если URI не удаётся разобрать.
+            botocore.exceptions.ClientError: Если объект не существует.
         """
         bucket, key = self._parse_uri(uri)
         response = self._s3.get_object(Bucket=bucket, Key=key)
@@ -226,16 +224,16 @@ class S3Client:
         return PILImage.open(io.BytesIO(data)).convert("RGB")
 
     def load_image_to_tmp(self, uri: str) -> Path:
-        """Download an image to a temp file and return its path.
+        """Скачивает изображение во временный файл и возвращает его путь.
 
-        Useful during batch indexing where the same image is accessed multiple
-        times — callers can cache the returned path keyed by URI.
+        Полезно при пакетной индексации, когда одно изображение используется
+        несколько раз — вызывающий код кэширует путь по URI.
 
         Args:
-            uri: S3 URI or bare key.
+            uri: S3-URI или голый ключ.
 
         Returns:
-            Path to a temporary file (caller is responsible for deletion).
+            Путь к временному файлу (вызывающий отвечает за удаление).
         """
         bucket, key = self._parse_uri(uri)
         suffix = Path(key).suffix or ".jpg"
@@ -246,12 +244,12 @@ class S3Client:
         return tmp_path
 
     def get_last_modified(self, s3_key: str) -> float | None:
-        """Return the ``LastModified`` timestamp of *s3_key* as a POSIX float.
+        """Возвращает метку времени ``LastModified`` объекта *s3_key* как POSIX float.
 
-        Returns ``None`` if the object does not exist.
+        Возвращает ``None`` если объект не существует.
 
         Args:
-            s3_key: Object key within ``config.bucket``.
+            s3_key: Ключ объекта внутри ``config.bucket``.
         """
         try:
             head = self._s3.head_object(Bucket=self._config.bucket, Key=s3_key)
@@ -259,21 +257,21 @@ class S3Client:
         except self._s3.exceptions.NoSuchKey:
             return None
         except Exception as exc:
-            # botocore.exceptions.ClientError for 404
+            # botocore.exceptions.ClientError для 404
             if _is_not_found(exc):
                 return None
             raise
 
     def is_remote_newer(self, s3_key: str, local_path: Path) -> bool:
-        """Return ``True`` if the S3 object is newer than *local_path*.
+        """Возвращает ``True`` если S3-объект новее *local_path*.
 
-        Also returns ``True`` when *local_path* does not exist (treat as
-        infinitely old) or when *s3_key* does not exist on S3 (no update
-        available, return ``False``).
+        Также возвращает ``True`` если *local_path* не существует (считается
+        бесконечно старым) или если *s3_key* не существует на S3 (обновлений нет,
+        возвращается ``False``).
 
         Args:
-            s3_key: Object key within ``config.bucket``.
-            local_path: Local file to compare against.
+            s3_key: Ключ объекта внутри ``config.bucket``.
+            local_path: Локальный файл для сравнения.
         """
         if not local_path.exists():
             return True
@@ -284,33 +282,33 @@ class S3Client:
         return remote_ts > local_ts
 
     def index_key(self, dataset_name: str) -> str:
-        """Return the S3 key for ``index.faiss`` of *dataset_name*."""
+        """Возвращает S3-ключ файла ``index.faiss`` датасета *dataset_name*."""
         return self._config.dataset_prefix(dataset_name) + "index.faiss"
 
     def metadata_key(self, dataset_name: str) -> str:
-        """Return the S3 key for ``metadata.parquet`` of *dataset_name*."""
+        """Возвращает S3-ключ файла ``metadata.parquet`` датасета *dataset_name*."""
         return self._config.dataset_prefix(dataset_name) + "metadata.parquet"
 
     def _parse_uri(self, uri: str) -> tuple[str, str]:
-        """Parse ``s3://bucket/key`` or bare ``key`` into ``(bucket, key)``.
+        """Разбирает ``s3://bucket/key`` или голый ``key`` в ``(bucket, key)``.
 
         Args:
-            uri: URI or bare key string.
+            uri: URI или строка голого ключа.
 
         Returns:
-            ``(bucket, key)`` tuple.
+            Кортеж ``(bucket, key)``.
         """
         match = _S3_URI_RE.match(uri)
         if match:
             return match.group(1), match.group(2)
-        # Bare key — use the configured bucket
+        # Голый ключ — используем настроенный бакет
         return self._config.bucket, uri
 
 
 def _is_not_found(exc: Exception) -> bool:
-    """Return ``True`` if *exc* is a boto3 ClientError for a 404/NoSuchKey."""
+    """Возвращает ``True`` если *exc* — boto3 ClientError для 404/NoSuchKey."""
     try:
-        # botocore.exceptions.ClientError carries a ``response`` dict.
+        # botocore.exceptions.ClientError несёт словарь ``response``.
         code: str = exc.response["Error"]["Code"]  # type: ignore[attr-defined]
     except (AttributeError, KeyError, TypeError):
         return False
