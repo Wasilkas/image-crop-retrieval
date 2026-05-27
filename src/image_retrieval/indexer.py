@@ -44,6 +44,7 @@ class SearchResult:
     x2: int
     y2: int
     score: float
+    label_class: str = ""
 
 
 # Обязательные колонки в Parquet-файле метаданных.
@@ -135,6 +136,7 @@ class FAISSIndex:
         distances, indices = self._index.search(query.astype(np.float32), k)
         # distances / indices имеют форму (1, k)
 
+        has_class = "label_class" in self._metadata.columns
         results: list[SearchResult] = []
         for dist, idx in zip(distances[0], indices[0], strict=True):
             # FAISS возвращает индекс -1 если результатов меньше запрошенного
@@ -150,6 +152,7 @@ class FAISSIndex:
                     x2=int(row["x2"]),
                     y2=int(row["y2"]),
                     score=float(dist),
+                    label_class=str(row["label_class"]) if has_class else "",
                 )
             )
         return results

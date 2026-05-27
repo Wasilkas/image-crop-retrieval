@@ -1,8 +1,8 @@
 """Сетка результатов Streamlit: отображение топ-K найденных bounding-box кропов.
 
 Каждая ячейка показывает вырезанный фрагмент изображения, оценку косинусного
-сходства, координаты bounding-box, имя файла и **чекбокс** для множественного
-выбора.
+сходства, координаты bounding-box, класс объекта, имя файла и **чекбокс** для
+множественного выбора.
 
 Выбранные результаты хранятся в ``st.session_state["selected_box_ids"]``
 (``set[str]``).  Панель экспорта CVAT в
@@ -11,7 +11,7 @@
 
 Изображения по умолчанию загружаются из локальной файловой системы.  Если
 передан *s3_client* и путь к изображению начинается с ``s3://`` — изображение
-загружается из S3.
+загружается из S3 через переданный boto3-клиент.
 
 Ошибки загрузки отдельных изображений отображаются как плитки с ошибкой,
 остальные ячейки сетки продолжают отрисовываться нормально.
@@ -19,9 +19,11 @@
 
 from __future__ import annotations
 
+import io
 import logging
+import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import streamlit as st
 from PIL import Image as PILImage
@@ -30,12 +32,15 @@ from ..config import AppBlock
 from ..indexer import SearchResult
 
 if TYPE_CHECKING:
-    from ..s3_client import S3Client
+    pass
 
 logger = logging.getLogger(__name__)
 
 # Ключ session_state, хранящий набор выбранных box ID
 _SELECTED_KEY = "selected_box_ids"
+
+# Совпадает с URI вида s3://bucket/key
+_S3_URI_RE = re.compile(r"^s3://([^/]+)/(.+)$")
 
 
 def get_selected_box_ids() -> set[str]:
@@ -49,7 +54,7 @@ def render_results(
     results: list[SearchResult],
     images_root: Path,
     config: AppBlock,
-    s3_client: S3Client | None = None,
+    s3_client: Any | None = None,
 ) -> None:
     """Отображает *results* как адаптивную сетку кропов с чекбоксами.
 
@@ -63,8 +68,8 @@ def render_results(
         images_root: Базовая директория для разрешения локальных ``image_path``.
             Игнорируется если *s3_client* задан и пути начинаются с ``s3://``.
         config: Конфигурация приложения; используется ``results_columns``.
-        s3_client: Необязательный S3-клиент.  При наличии пути, начинающиеся
-            с ``s3://``, загружаются из S3 вместо локальной файловой системы.
+        s3_client: Необязательный boto3 S3-клиент.  При наличии пути,
+            начинающиеся с ``s3://``, загружаются из S3.
     """
     if not results:
         st.warning("Результаты не найдены.")
@@ -97,7 +102,7 @@ def render_results(
 def _render_single_result(
     result: SearchResult,
     images_root: Path,
-    s3_client: S3Client | None,
+    s3_client: Any | None,
     selected: set[str],
 ) -> None:
     """Отображает одну ячейку результата: чекбокс + изображение + подпись."""
@@ -121,8 +126,12 @@ def _render_single_result(
         st.error(f"⚠️ Изображение не найдено:\n`{result.image_path}`")
 
     score_pct = result.score * 100
+    class_line = (
+        f"**Класс:** {result.label_class}  \n" if result.label_class else ""
+    )
     st.caption(
         f"**Сходство:** {score_pct:.1f}%  \n"
+        f"{class_line}"
         f"**Кроп:** [{result.x1}, {result.y1} – {result.x2}, {result.y2}]  \n"
         f"`{Path(result.image_path).name}`"
     )
@@ -131,13 +140,13 @@ def _render_single_result(
 def _load_crop(
     result: SearchResult,
     images_root: Path,
-    s3_client: S3Client | None,
+    s3_client: Any | None,
 ) -> PILImage.Image | None:
     """Загружает и возвращает вырезанный фрагмент для *result*.
 
     Логика маршрутизации:
     1. Если ``result.image_path`` начинается с ``s3://`` **и** *s3_client* задан
-       → загрузка из S3.
+       → загрузка из S3 через boto3.
     2. Иначе → разрешается относительно *images_root* (или как абсолютный путь)
        и загружается с локального диска.
 
@@ -159,11 +168,22 @@ def _load_crop(
 
 def _load_crop_from_s3(
     result: SearchResult,
-    s3_client: S3Client,
+    s3_client: Any,
 ) -> PILImage.Image | None:
-    """Загружает изображение из S3 и возвращает вырезанный фрагмент."""
+    """Загружает изображение из S3 через boto3 и возвращает вырезанный фрагмент."""
     try:
-        img = s3_client.load_image(result.image_path)
+        match = _S3_URI_RE.match(result.image_path)
+        if not match:
+            logger.warning(
+                "Не удалось разобрать S3-URI для box_id='%s': '%s'.",
+                result.box_id,
+                result.image_path,
+            )
+            return None
+        bucket, key = match.group(1), match.group(2)
+        response = s3_client.get_object(Bucket=bucket, Key=key)
+        data: bytes = response["Body"].read()
+        img = PILImage.open(io.BytesIO(data)).convert("RGB")
         return img.crop((result.x1, result.y1, result.x2, result.y2))
     except Exception:
         logger.warning(

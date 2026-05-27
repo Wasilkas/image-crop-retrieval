@@ -1,468 +1,612 @@
-"""Страница «Поиск похожих кропов».
+"""
+🔍 Streamlit Image Crop Retrieval — SSL-поиск похожих кропов
 
-Содержит кэшированные фабрики Streamlit и функцию :func:`render`,
-вызываемую через ``st.Page()`` в ``app.py``.
+Архитектура
+-----------
+Страница реализована как класс :class:`ImageRetriever` с методом :meth:`run`.
+Точка входа — :func:`app`, принимающая ``(configuration, config_path)``
+в точности как все прочие страницы приложения.
 
-Конфигурация загружается через :class:`~image_retrieval.config.Configuration`
-с цепочкой приоритетов Consul → YAML → умолчания.  Переменные среды
-применяются поверх через :func:`_apply_env_overrides`.
+Конфигурация передаётся снаружи через ``app.py``; самостоятельной загрузки
+конфигурации нет.
 
-Переменные среды (Consul)::
+S3-интеграция
+-------------
+Прямой доступ к S3 через ``boto3.client("s3")`` без промежуточных адаптеров.
+Клиент кэшируется через ``@st.cache_resource(max_entries=5, ttl=3600)``,
+тяжёлые ресурсы (веса, индекс) — через ``@st.cache_resource(ttl=600)``.
+Изображения результатов — через ``@st.cache_data(ttl=600)``.
 
-    CONSUL_URL    URL агента Consul, напр. ``http://consul:8500``
-    CONSUL_KEY    Ключ KV с YAML-конфигом (умолч.: ``config/image-crop-retrieval``)
+Структура бакета
+----------------
+::
 
-Переменные среды (YAML-файл)::
+    weights/           # чекпоинты SSL-модели (*.pt / *.pth)
+    ssl_index/         # FAISS-индексы (*.faiss) и метаданные (*.parquet)
 
-    CONFIG_PATH   Путь к YAML-файлу конфигурации (умолч.: ``config.yaml``)
+Берётся последний файл каждого типа по ``LastModified``.
 
-Быстрые переопределения::
-
-    MODEL_PATH         Предзаполнить поле пути к чекпоинту
-    S3_BUCKET          Включить S3-режим
-    S3_PREFIX          Префикс ключей датасетов в S3
-    S3_REGION          Регион AWS (умолч.: ``us-east-1``)
-    S3_ENDPOINT_URL    Кастомный endpoint (MinIO, Yandex Cloud и др.)
-    S3_CHECK_INTERVAL  Интервал опроса S3 в секундах (умолч.: 300)
-    DATASETS_DIR       Директория датасетов (только локальный режим)
-
-Подробнее о полной схеме YAML см. ``config.yaml.example``.
+CVAT-экспорт
+------------
+Через ``cveta`` SDK: ``CVAT(cvat_name=...)``.
 """
 
 from __future__ import annotations
 
-import datetime
 import hashlib
+import io
 import logging
-import os
+import re
 import tempfile
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
+import boto3
 import numpy as np
+import pandas as pd
 import streamlit as st
+from cveta.cvat.cvat_tools import CVAT
+from PIL import Image, ImageDraw
 
-from image_retrieval.config import (
-    AppBlock,
-    Configuration,
-    EncoderBlock,
-    S3Block,
-)
+from image_retrieval.config import Configuration
 from image_retrieval.embedder import TorchEmbedder
-from image_retrieval.registry import DatasetRegistry, S3DatasetRegistry
-from image_retrieval.s3_client import S3Client
+from image_retrieval.indexer import FAISSIndex, SearchResult
 from image_retrieval.ui.crop_selector import render_crop_selector
-from image_retrieval.ui.cvat_exporter import render_cvat_exporter
-from image_retrieval.ui.results_viewer import render_results
 
 logger = logging.getLogger(__name__)
 
-_AnyRegistry = DatasetRegistry | S3DatasetRegistry
+# ============================================================================
+# 🔧 SESSION_DEFAULTS
+# ============================================================================
 
-# TTL кэша для всех S3-ресурсов (модель и реестр датасетов): 10 минут.
-# По истечении TTL Streamlit пересоздаёт ресурс: для S3-URI проверяется
-# наличие более новой версии на S3, при необходимости файл скачивается заново.
-_S3_CACHE_TTL = 600
+SESSION_DEFAULTS_RETRIEVAL: dict[str, Any] = {
+    "retrieval_bucket": None,
+    "retrieval_results": None,
+    "selected_result_ids": set(),
+    "reset_counter": 0,
+}
 
-
-@st.cache_resource
-def _load_config() -> Configuration:
-    """Загружает корневой :class:`Configuration` один раз на время жизни процесса.
-
-    Автоматически читает переменные среды ``CONSUL_URL`` / ``CONFIG_PATH``.
-    Быстрые переопределения (``S3_BUCKET``, ``DATASETS_DIR`` и др.) применяются
-    поверх в :func:`_apply_env_overrides`.
-    """
-    return Configuration.load()
+# ============================================================================
+# 🔐 S3-утилиты (модульный уровень, аналогично dataset_viewer.py)
+# ============================================================================
 
 
-def _apply_env_overrides(cfg: Configuration) -> Configuration:
-    """Применяет быстрые переопределения из переменных среды поверх *cfg*.
-
-    Переменные среды имеют приоритет над YAML / Consul, что позволяет
-    передавать секреты (токены, пароли) без хранения в файлах конфигурации.
-    """
-    overrides: dict[str, object] = {}
-
-    # Блок S3 — любая S3_*-переменная включает S3-режим
-    s3_bucket = os.environ.get("S3_BUCKET", "").strip()
-    if s3_bucket:
-        existing_s3 = cfg.s3 or S3Block(bucket=s3_bucket)
-        overrides["s3"] = S3Block(
-            bucket=s3_bucket,
-            prefix=os.environ.get("S3_PREFIX", existing_s3.prefix),
-            region=os.environ.get("S3_REGION", existing_s3.region),
-            endpoint_url=(
-                os.environ.get("S3_ENDPOINT_URL") or existing_s3.endpoint_url
-            ),
-            check_interval_seconds=int(
-                os.environ.get(
-                    "S3_CHECK_INTERVAL",
-                    str(existing_s3.check_interval_seconds),
-                )
-            ),
-        )
-
-    # Блок App
-    datasets_dir_env = os.environ.get("DATASETS_DIR", "").strip()
-    top_k_env = os.environ.get("TOP_K", "").strip()
-    device_env = os.environ.get("DEVICE", "").strip()
-    if datasets_dir_env or top_k_env or device_env:
-        overrides["app"] = AppBlock(
-            datasets_dir=(
-                Path(datasets_dir_env) if datasets_dir_env else cfg.app.datasets_dir
-            ),
-            top_k=int(top_k_env) if top_k_env else cfg.app.top_k,
-            device=device_env or cfg.app.device,
-            min_crop_px=cfg.app.min_crop_px,
-            canvas_width=cfg.app.canvas_width,
-            canvas_height=cfg.app.canvas_height,
-            results_columns=cfg.app.results_columns,
-        )
-
-    # Блок Encoder — переменная среды MODEL_PATH
-    model_path_env = os.environ.get("MODEL_PATH", "").strip()
-    if model_path_env and cfg.encoder is None:
-        overrides["encoder"] = EncoderBlock(checkpoint=model_path_env)
-
-    if not overrides:
-        return cfg
-    return cfg.model_copy(update=overrides)
+@st.cache_resource(max_entries=5, ttl=3600)
+def _get_s3_client_cached() -> Any:
+    """Кэшированный boto3 S3-клиент (TTL 1 час)."""
+    return boto3.client("s3")
 
 
-@st.cache_resource
-def _load_local_registry(datasets_dir: str) -> DatasetRegistry:
-    """Создаёт и кэширует локальный реестр датасетов на время жизни процесса."""
-    return DatasetRegistry(AppBlock(datasets_dir=Path(datasets_dir)))
-
-
-@st.cache_resource(ttl=_S3_CACHE_TTL)
-def _load_s3_registry(
+def _list_s3_objects(
     bucket: str,
     prefix: str,
-    region: str,
-    endpoint_url: str,
-    check_interval: int,
-) -> S3DatasetRegistry:
-    """Создаёт S3-реестр датасетов; кэш пересоздаётся каждые 10 минут.
-
-    При пересоздании повторно скачивает обновлённые индексы из S3
-    (если версия на S3 новее локального кэша).
-    """
-    s3_block = S3Block(
-        bucket=bucket,
-        prefix=prefix,
-        region=region,
-        endpoint_url=endpoint_url or None,
-        check_interval_seconds=check_interval,
-    )
-    return S3DatasetRegistry(s3_block)
-
-
-@st.cache_resource(ttl=_S3_CACHE_TTL)
-def _load_s3_client(
-    bucket: str,
-    prefix: str,
-    region: str,
-    endpoint_url: str,
-    check_interval: int,
-) -> S3Client:
-    """Создаёт и кэширует S3-клиент; кэш пересоздаётся каждые 10 минут."""
-    s3_block = S3Block(
-        bucket=bucket,
-        prefix=prefix,
-        region=region,
-        endpoint_url=endpoint_url or None,
-        check_interval_seconds=check_interval,
-    )
-    return S3Client(s3_block)
-
-
-def _resolve_model_path(
-    encoder_cfg: EncoderBlock,
-    s3_client: S3Client | None,
-) -> Path:
-    """Возвращает локальный путь к чекпоинту модели.
-
-    Если ``encoder_cfg.checkpoint`` — локальный путь, возвращает его напрямую.
-    Если это ``s3://``-URI:
-    * Вычисляет путь кэша в ``encoder_cfg.cache_dir`` (или системном tmp),
-      используя MD5-хэш URI в качестве уникального ключа.
-    * Скачивает файл при первом обращении.
-    * При последующих вызовах (в т.ч. после сброса TTL-кэша) проверяет, не новее
-      ли объект на S3, и перекачивает только при необходимости.
+    suffix: str = "",
+) -> list[dict[str, Any]]:
+    """Перечисляет объекты S3 под *prefix* (без «директорий»).
 
     Args:
-        encoder_cfg: Конфигурационный блок энкодера.
-        s3_client: S3-клиент (обязателен для ``s3://``-чекпоинтов).
+        bucket: Имя бакета.
+        prefix: Префикс ключей объектов (напр. ``"weights/"``).
+        suffix: Если задан, возвращает только объекты с этим суффиксом.
+
+    Returns:
+        Список словарей с ключами ``Key``, ``Size``, ``LastModified``.
+    """
+    try:
+        s3 = _get_s3_client_cached()
+        paginator = s3.get_paginator("list_objects_v2")
+        results: list[dict[str, Any]] = []
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents") or []:
+                key: str = obj["Key"]
+                if key.endswith("/"):
+                    continue
+                if suffix and not key.endswith(suffix):
+                    continue
+                results.append(obj)
+        return results
+    except Exception as exc:
+        logger.error("Ошибка списка объектов s3://%s/%s: %s", bucket, prefix, exc)
+        return []
+
+
+def _latest_by_modified(
+    objects: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Возвращает объект с наибольшим ``LastModified``, или ``None``."""
+    return max(objects, key=lambda o: o["LastModified"]) if objects else None
+
+
+def _s3_newer_than_local(
+    s3: Any,
+    bucket: str,
+    key: str,
+    local: Path,
+) -> bool:
+    """Возвращает ``True`` если S3-объект новее локального файла."""
+    if not local.exists():
+        return True
+    try:
+        head = s3.head_object(Bucket=bucket, Key=key)
+        return bool(head["LastModified"].timestamp() > local.stat().st_mtime)
+    except Exception:
+        return False
+
+
+@st.cache_data(ttl=600, show_spinner="📥 Загрузка изображения...")
+def _load_image_from_s3_cached(
+    bucket: str,
+    key: str,
+) -> Image.Image | None:
+    """Загружает PIL-изображение из S3; кэш 10 минут."""
+    try:
+        s3 = _get_s3_client_cached()
+        response = s3.get_object(Bucket=bucket, Key=key)
+        data: bytes = response["Body"].read()
+        return Image.open(io.BytesIO(data)).convert("RGB")
+    except Exception as exc:
+        logger.warning("Не удалось загрузить s3://%s/%s: %s", bucket, key, exc)
+        return None
+
+
+# ============================================================================
+# 🏋️ Тяжёлые ресурсы (веса и индекс) — TTL 10 мин
+# ============================================================================
+
+
+@st.cache_resource(ttl=600)
+def _load_latest_weights(bucket: str) -> Path:
+    """Скачивает последний файл весов из ``{bucket}/weights/``; TTL 10 мин.
+
+    При истечении TTL повторно проверяет ``LastModified`` и скачивает только
+    если S3-версия новее локального кэша.
 
     Raises:
-        ValueError: Если задан S3-URI, но *s3_client* не предоставлен.
-        FileNotFoundError: Если локальный путь не существует.
+        FileNotFoundError: Если ``weights/`` пуста.
     """
-    checkpoint = encoder_cfg.checkpoint
-    if not checkpoint.startswith("s3://"):
-        local = Path(checkpoint)
-        if not local.exists():
-            raise FileNotFoundError(
-                f"Чекпоинт модели не найден: {checkpoint}"
-            )
-        return local
-
-    if s3_client is None:
-        raise ValueError(
-            "Чекпоинт энкодера — S3-URI, но S3-конфигурация не найдена. "
-            "Укажите блок 's3' в конфиге или переменную среды S3_BUCKET."
+    s3 = _get_s3_client_cached()
+    objects = _list_s3_objects(bucket, "weights/")
+    latest = _latest_by_modified(objects)
+    if latest is None:
+        raise FileNotFoundError(
+            f"Файлы весов не найдены в s3://{bucket}/weights/"
         )
+    key: str = latest["Key"]
 
-    # Стабильный локальный путь кэша, производный от URI модели
-    cache_dir = (
-        encoder_cfg.cache_dir
-        or Path(tempfile.gettempdir()) / "image-retrieval-models"
-    )
-    uri_hash = hashlib.md5(checkpoint.encode()).hexdigest()[:16]
-    suffix = Path(checkpoint.rsplit("/", 1)[-1]).suffix or ".pth"
-    local_path = cache_dir / f"model_{uri_hash}{suffix}"
+    cache_dir = Path(tempfile.gettempdir()) / "image-retrieval-weights"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    uri_hash = hashlib.md5(f"{bucket}/{key}".encode()).hexdigest()[:16]
+    local_path = cache_dir / f"{uri_hash}{Path(key).suffix or '.pth'}"
 
-    if s3_client.is_remote_newer(_s3_key_from_uri(checkpoint), local_path):
-        logger.info("Скачивание чекпоинта модели с %s ...", checkpoint)
-        s3_client.download_uri(checkpoint, local_path)
-        logger.info("Модель сохранена в кэш: %s", local_path)
+    if _s3_newer_than_local(s3, bucket, key, local_path):
+        logger.info("Скачивание весов: s3://%s/%s → %s", bucket, key, local_path)
+        s3.download_file(bucket, key, str(local_path))
 
     return local_path
 
 
-def _s3_key_from_uri(uri: str) -> str:
-    """Извлекает ключ из URI формата ``s3://bucket/key``."""
-    parts = uri.split("/", 3)
-    return parts[3] if len(parts) >= 4 else uri
+@st.cache_resource(ttl=600)
+def _load_latest_index(bucket: str) -> FAISSIndex:
+    """Скачивает последние ``*.faiss`` + ``*.parquet`` из ``{bucket}/ssl_index/``.
+
+    При истечении TTL проверяет ``LastModified`` и перекачивает только
+    обновлённые файлы.
+
+    Raises:
+        FileNotFoundError: Если ``ssl_index/`` не содержит нужных файлов.
+    """
+    s3 = _get_s3_client_cached()
+    all_objects = _list_s3_objects(bucket, "ssl_index/")
+
+    latest_faiss = _latest_by_modified(
+        [o for o in all_objects if o["Key"].endswith(".faiss")]
+    )
+    latest_parquet = _latest_by_modified(
+        [o for o in all_objects if o["Key"].endswith(".parquet")]
+    )
+
+    if latest_faiss is None:
+        raise FileNotFoundError(
+            f"FAISS-индекс не найден в s3://{bucket}/ssl_index/"
+        )
+    if latest_parquet is None:
+        raise FileNotFoundError(
+            f"Parquet-метаданные не найдены в s3://{bucket}/ssl_index/"
+        )
+
+    cache_dir = Path(tempfile.gettempdir()) / "image-retrieval-index"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    bucket_hash = hashlib.md5(bucket.encode()).hexdigest()[:8]
+    faiss_local = cache_dir / f"{bucket_hash}_index.faiss"
+    meta_local = cache_dir / f"{bucket_hash}_metadata.parquet"
+
+    faiss_key: str = latest_faiss["Key"]
+    parquet_key: str = latest_parquet["Key"]
+
+    if _s3_newer_than_local(s3, bucket, faiss_key, faiss_local):
+        logger.info(
+            "Скачивание индекса: s3://%s/%s → %s", bucket, faiss_key, faiss_local
+        )
+        s3.download_file(bucket, faiss_key, str(faiss_local))
+
+    if _s3_newer_than_local(s3, bucket, parquet_key, meta_local):
+        logger.info(
+            "Скачивание метаданных: s3://%s/%s → %s",
+            bucket,
+            parquet_key,
+            meta_local,
+        )
+        s3.download_file(bucket, parquet_key, str(meta_local))
+
+    return FAISSIndex(faiss_local, meta_local)
 
 
-@st.cache_resource(ttl=_S3_CACHE_TTL)
-def _load_embedder(
-    checkpoint: str,
-    device: str,
-    s3_bucket: str = "",
-    s3_region: str = "us-east-1",
-    s3_endpoint_url: str = "",
-    cache_dir_str: str = "",
-) -> TorchEmbedder:
-    """Загружает PyTorch-модель; кэш пересоздаётся каждые 10 минут.
+@st.cache_resource(ttl=600)
+def _load_embedder_cached(weights_path: str, device: str) -> TorchEmbedder:
+    """Загружает TorchEmbedder; TTL 10 мин."""
+    return TorchEmbedder(checkpoint_path=Path(weights_path), device=device)
 
-    При истечении TTL Streamlit повторно вызывает эту функцию с теми же
-    аргументами.  Для ``s3://``-чекпоинтов вызывается :func:`_resolve_model_path`,
-    которая скачивает файл только если версия на S3 новее локального кэша.
+
+# ============================================================================
+# 🎨 Отрисовка bbox на изображении результата
+# ============================================================================
+
+_S3_URI_RE = re.compile(r"^s3://([^/]+)/(.+)$")
+
+
+def _parse_image_path(image_path: str, default_bucket: str) -> tuple[str, str]:
+    """Разбирает ``image_path`` в ``(bucket, key)``."""
+    match = _S3_URI_RE.match(image_path)
+    if match:
+        return match.group(1), match.group(2)
+    return default_bucket, image_path
+
+
+def _draw_result_bbox(
+    image: Image.Image,
+    result: SearchResult,
+) -> Image.Image:
+    """Рисует bounding-box найденного кропа на полном изображении."""
+    annotated = image.copy()
+    draw = ImageDraw.Draw(annotated)
+    color = (255, 69, 58)
+    draw.rectangle(
+        (result.x1, result.y1, result.x2, result.y2),
+        outline=color,
+        width=2,
+    )
+    if result.label_class:
+        draw.text(
+            (result.x1 + 4, result.y1 + 4),
+            result.label_class,
+            fill=color,
+        )
+    return annotated
+
+
+# ============================================================================
+# 🧩 ОСНОВНОЙ КЛАСС
+# ============================================================================
+
+
+class ImageRetriever:
+    """🔍 SSL-поиск похожих кропов из S3-датасета.
 
     Args:
-        checkpoint: Локальный путь или ``s3://``-URI к чекпоинту модели.
-        device: Строка устройства PyTorch (напр. ``"cpu"``).
-        s3_bucket: Имя бакета S3 (только для ``s3://``-чекпоинтов).
-        s3_region: Регион AWS.
-        s3_endpoint_url: Кастомный endpoint S3 (MinIO, Yandex Cloud и др.).
-        cache_dir_str: Директория локального кэша для S3-моделей (пустая строка
-            означает использование системной временной директории).
+        configuration: Корневой объект конфигурации приложения.
+        config_path: Путь/имя конфигурационного файла (передаётся из ``app.py``
+            для совместимости с соглашением многостраничного приложения).
     """
-    if checkpoint.startswith("s3://"):
-        if not s3_bucket:
-            raise ValueError(
-                "Чекпоинт модели — S3-URI, но S3_BUCKET не задан. "
-                "Укажите блок 's3' в конфиге или переменную среды S3_BUCKET."
-            )
-        s3_block = S3Block(
-            bucket=s3_bucket,
-            region=s3_region,
-            endpoint_url=s3_endpoint_url or None,
+
+    def __init__(self, configuration: Configuration, config_path: str) -> None:
+        self.configuration = configuration
+        self.config_path = config_path
+        cvat_name = (
+            configuration.cvat.cvat_name if configuration.cvat else "sip"
         )
-        s3_client = S3Client(s3_block)
-        cache_dir: Path | None = Path(cache_dir_str) if cache_dir_str else None
-        encoder_block = EncoderBlock(checkpoint=checkpoint, cache_dir=cache_dir)
-        local_path = _resolve_model_path(encoder_block, s3_client)
-    else:
-        local_path = Path(checkpoint)
-        if not local_path.exists():
-            raise FileNotFoundError(
-                f"Чекпоинт модели не найден: {checkpoint}"
+        self.cvat2 = CVAT(cvat_name=cvat_name)
+        self._state_initialization()
+
+    def _state_initialization(self) -> None:
+        """Инициализирует ключи session_state из ``SESSION_DEFAULTS_RETRIEVAL``."""
+        for key, value in SESSION_DEFAULTS_RETRIEVAL.items():
+            if key not in st.session_state:
+                st.session_state[key] = value
+        if not isinstance(st.session_state.selected_result_ids, set):
+            st.session_state.selected_result_ids = set()
+
+    # ── CVAT-экспорт ─────────────────────────────────────────────────────
+
+    def _create_cvat_task(self, results: list[SearchResult]) -> None:
+        """Создаёт задачу CVAT из выбранных результатов."""
+        selected_ids: set[str] = st.session_state.selected_result_ids
+        selected = [r for r in results if r.box_id in selected_ids]
+        if not selected:
+            st.warning("❌ Нет выбранных результатов. Отметьте чекбоксы.")
+            return
+
+        cvat_project_name: str | None = None
+        if self.configuration.cvat and self.configuration.cvat.project_id is not None:
+            cvat_project_name = str(self.configuration.cvat.project_id)
+
+        bucket: str = st.session_state.retrieval_bucket or ""
+        now = datetime.now()
+        task_name = f"retrieval_{now.strftime('%Y%m%d_%H%M%S')}"
+
+        # Строим DataFrame аннотаций в формате cveta
+        rows = []
+        for r in selected:
+            img_bucket, img_key = _parse_image_path(r.image_path, bucket)
+            s3_uri = f"s3://{img_bucket}/{img_key}"
+            rows.append(
+                {
+                    "s3_image_path": s3_uri,
+                    "image_name": Path(r.image_path).name,
+                    "bbox_x_tl": r.x1,
+                    "bbox_y_tl": r.y1,
+                    "bbox_x_br": r.x2,
+                    "bbox_y_br": r.y2,
+                    "instance_label": r.label_class or "crop",
+                    "confidence": r.score,
+                }
             )
+        annotations_df = pd.DataFrame(rows)
+        s3_paths = annotations_df["s3_image_path"].unique().tolist()
 
-    return TorchEmbedder(checkpoint_path=local_path, device=device)
-
-
-def _render_dataset_status(
-    registry: _AnyRegistry,
-    dataset_name: str,
-) -> None:
-    """Отображает дату построения индекса и кнопку «Пересканировать датасеты»."""
-    reload_info = registry.last_reload_info(dataset_name)
-    if reload_info is not None:
-        index_mtime_ns, _ = reload_info
-        ts = datetime.datetime.fromtimestamp(
-            index_mtime_ns / 1_000_000_000, tz=datetime.UTC
-        ).astimezone()
-        st.caption(f"🕒 Индекс построен: {ts.strftime('%Y-%m-%d %H:%M:%S %Z')}")
-
-    if st.button(
-        "🔄 Пересканировать датасеты",
-        help=(
-            "Локальный режим: повторно сканирует директорию датасетов.  "
-            "S3-режим: заново перечисляет префиксы в бакете."
-        ),
-        use_container_width=True,
-    ):
-        new_names = registry.rescan()
-        if new_names:
-            st.success(f"Найдены новые датасеты: {', '.join(new_names)}")
-            st.rerun()
-        else:
-            st.info("Новых датасетов не найдено.")
-
-
-def render() -> None:
-    """Отрисовывает страницу поиска похожих кропов."""
-    base_cfg = _load_config()
-    cfg = _apply_env_overrides(base_cfg)
-
-    st.title("🔍 Поиск похожих кропов")
-    st.caption(
-        "Загрузите изображение, нарисуйте рамку и найдите визуально "
-        "похожие кропы в вашем датасете."
-    )
-
-    with st.sidebar:
-        st.header("⚙️ Настройки")
-
-        default_checkpoint = cfg.encoder.checkpoint if cfg.encoder else ""
-        model_input = st.text_input(
-            label="Чекпоинт модели (.pt / .pth или s3://)",
-            value=default_checkpoint,
-            placeholder="s3://bucket/models/encoder.pth  или  /local/encoder.pth",
-            help=(
-                "Локальный путь или s3://-URI к чекпоинту SSL-модели.  "
-                "S3-модели скачиваются в локальный кэш при первом запросе "
-                "и обновляются каждые 10 минут."
-            ),
-        )
-
-        st.divider()
-
-        registry: _AnyRegistry
-        s3_client: S3Client | None = None
-
-        if cfg.s3 is not None:
-            s3 = cfg.s3
-            prefix_display = s3.prefix or "/"
-            st.caption(f"☁️ S3: `s3://{s3.bucket}/{prefix_display}`")
-
-            registry = _load_s3_registry(
-                bucket=s3.bucket,
-                prefix=s3.prefix,
-                region=s3.region,
-                endpoint_url=s3.endpoint_url or "",
-                check_interval=s3.check_interval_seconds,
-            )
-            s3_client = _load_s3_client(
-                bucket=s3.bucket,
-                prefix=s3.prefix,
-                region=s3.region,
-                endpoint_url=s3.endpoint_url or "",
-                check_interval=s3.check_interval_seconds,
-            )
-        else:
-            registry = _load_local_registry(str(cfg.app.datasets_dir))
-
-        available_datasets = registry.available()
-        if not available_datasets:
-            if cfg.s3 is not None:
-                msg = (
-                    f"Датасеты не найдены в S3-бакете `{cfg.s3.bucket}` "
-                    f"по префиксу `{cfg.s3.prefix or '/'}`.  \n"
-                    "Запустите `scripts/build_index.py s3 …` для построения индекса."
+        with st.spinner(f"⏳ Создание задачи '{task_name}' в CVAT..."):
+            try:
+                self.cvat2.create_task(
+                    name=task_name,
+                    labels=None,
+                    content=s3_paths,
+                    annotations=annotations_df,
+                    assignee=None,
+                    image_quality=100,
+                    project_id=None,
+                    project_name=cvat_project_name,
+                    segment_size=100,
+                    annotation_xml_path=None,
                 )
+                st.success(
+                    f"✅ Задача **{task_name}** создана! "
+                    f"{len(selected)} аннотаций.",
+                    icon="✅",
+                )
+            except Exception as exc:
+                logger.error("Ошибка создания задачи CVAT: %s", exc)
+                st.error(f"❌ Ошибка: {exc}")
+
+    # ── Отрисовка карточки результата ─────────────────────────────────────
+
+    def _render_result_card(
+        self,
+        result: SearchResult,
+        col: Any,
+        idx: int,
+        bucket: str,
+    ) -> None:
+        """Отображает карточку результата: изображение с bbox + чекбокс + подпись."""
+        with col:
+            img_bucket, img_key = _parse_image_path(result.image_path, bucket)
+            image = _load_image_from_s3_cached(img_bucket, img_key)
+
+            if image is not None:
+                annotated = _draw_result_bbox(image, result)
+                with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                    tmp_path = tmp.name
+                annotated.save(tmp_path, "JPEG", quality=95)
+                st.image(tmp_path, use_container_width=True)
+                try:
+                    import os
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
             else:
-                msg = (
-                    f"Индексированные датасеты не найдены в "
-                    f"`{cfg.app.datasets_dir}`.  \n"
-                    "Запустите `scripts/build_index.py local …` для создания индекса."
-                )
-            st.error(msg, icon="🚫")
+                st.error(f"⚠️ {Path(result.image_path).name}")
+
+            uid = result.box_id
+            safe_key = re.sub(r"[/:.]+", "_", uid)
+            cb_key = f"res_{safe_key}_{idx}_{st.session_state.reset_counter}"
+
+            current: bool = uid in st.session_state.selected_result_ids
+            new_selected: bool = st.checkbox("✅ Выбрать", value=current, key=cb_key)
+            if new_selected != current:
+                if new_selected:
+                    st.session_state.selected_result_ids.add(uid)
+                else:
+                    st.session_state.selected_result_ids.discard(uid)
+
+            score_pct = result.score * 100
+            class_text = f" · {result.label_class}" if result.label_class else ""
+            st.caption(
+                f"**{score_pct:.1f}%**{class_text}  \n"
+                f"`{Path(result.image_path).name}`  \n"
+                f"[{result.x1}, {result.y1} – {result.x2}, {result.y2}]"
+            )
+
+    # ── Сетка результатов ─────────────────────────────────────────────────
+
+    def _render_results_grid(
+        self,
+        results: list[SearchResult],
+        bucket: str,
+    ) -> None:
+        """Отображает результаты в сетке карточек с чекбоксами."""
+        if not results:
+            st.info("ℹ️ Результатов не найдено.")
+            return
+
+        n_sel: int = len(st.session_state.selected_result_ids)
+
+        hdr_col, clear_col = st.columns([6, 1])
+        with hdr_col:
+            label = f"### 🖼️ Топ-{len(results)} результатов"
+            if n_sel:
+                label += f" · **{n_sel} выбрано**"
+            st.markdown(label)
+        with clear_col:
+            if n_sel and st.button(
+                "✖ Сбросить",
+                help="Снять выбор со всех результатов.",
+                use_container_width=True,
+            ):
+                st.session_state.selected_result_ids = set()
+                st.session_state.reset_counter += 1
+                st.rerun()
+
+        cols_count = self.configuration.app.results_columns
+        for i in range(0, len(results), cols_count):
+            cols = st.columns(cols_count)
+            for j in range(cols_count):
+                idx = i + j
+                if idx < len(results):
+                    self._render_result_card(results[idx], cols[j], idx, bucket)
+
+        # Кнопка экспорта в CVAT
+        if n_sel > 0 and self.configuration.cvat is not None:
+            st.divider()
+            c1, c2 = st.columns([4, 1])
+            with c1:
+                st.markdown(f"**Выбрано {n_sel} результатов для экспорта**")
+            with c2:
+                if st.button(
+                    "📤 Экспорт в CVAT",
+                    type="primary",
+                    use_container_width=True,
+                ):
+                    self._create_cvat_task(results)
+
+    # ── Главный метод ─────────────────────────────────────────────────────
+
+    def run(self) -> None:
+        """Отрисовывает страницу поиска."""
+        st.markdown("""
+        <style>
+            .stImage > img { border-radius: 8px; }
+            div[data-testid="stMetricValue"] { font-size: 1.5rem; }
+        </style>
+        """, unsafe_allow_html=True)
+
+        st.title("🔍 Поиск похожих кропов")
+
+        cfg = self.configuration
+        buckets = cfg.app.buckets
+        if not buckets:
+            st.error(
+                "Список бакетов не задан. Укажите `app.buckets` в конфигурации.",
+                icon="🚫",
+            )
             st.stop()
 
-        dataset_name = st.selectbox(
-            label="Датасет",
-            options=available_datasets,
-            help="Выберите датасет для поиска.",
-        )
-        assert dataset_name is not None
+        # ── Боковая панель ────────────────────────────────────────────────
+        with st.sidebar:
+            st.header("⚙️ Настройки")
 
-        _render_dataset_status(registry, dataset_name)
+            bucket: str = st.selectbox(
+                "☁️ S3-бакет",
+                options=buckets,
+                help=(
+                    "Бакет с весами модели (`weights/`) "
+                    "и FAISS-индексом (`ssl_index/`)."
+                ),
+            )
 
+            # Сбрасываем результаты при смене бакета
+            if st.session_state.retrieval_bucket != bucket:
+                st.session_state.retrieval_bucket = bucket
+                st.session_state.retrieval_results = None
+                st.session_state.selected_result_ids = set()
+
+            top_k: int = st.slider(
+                "Топ-K результатов",
+                min_value=1,
+                max_value=50,
+                value=cfg.app.top_k,
+                help="Количество ближайших соседей для поиска.",
+            )
+
+            st.divider()
+            st.caption(f"☁️ `s3://{bucket}`")
+
+        # ── Выбор кропа ───────────────────────────────────────────────────
+        crop_result = render_crop_selector(cfg.app)
+        if crop_result is None:
+            if st.session_state.retrieval_results:
+                st.divider()
+                self._render_results_grid(
+                    st.session_state.retrieval_results, bucket
+                )
+            st.stop()
+        _full_image, crop = crop_result
+
+        # ── Кнопка поиска ─────────────────────────────────────────────────
         st.divider()
-
-        top_k: int = st.slider(
-            label="Топ-K результатов",
-            min_value=1,
-            max_value=50,
-            value=cfg.app.top_k,
-            help="Количество ближайших соседей для поиска.",
+        search_clicked = st.button(
+            "🔍 Найти", type="primary", use_container_width=False
         )
 
-        st.divider()
-        if cfg.s3 is None:
-            st.caption(f"📁 `{cfg.app.datasets_dir}`")
+        if not search_clicked:
+            if st.session_state.retrieval_results:
+                self._render_results_grid(
+                    st.session_state.retrieval_results, bucket
+                )
+            st.stop()
 
-    if not model_input:
-        st.info(
-            "👈 Укажите путь к чекпоинту SSL-модели в боковой панели.",
-            icon="ℹ️",
+        # ── Загрузка ресурсов из S3 (с кэшем) ────────────────────────────
+        with st.spinner("Загрузка весов модели из S3..."):
+            try:
+                weights_path = _load_latest_weights(bucket)
+            except FileNotFoundError as exc:
+                st.error(str(exc))
+                st.stop()
+
+        with st.spinner("Загрузка FAISS-индекса из S3..."):
+            try:
+                faiss_index = _load_latest_index(bucket)
+            except FileNotFoundError as exc:
+                st.error(str(exc))
+                st.stop()
+
+        try:
+            embedder = _load_embedder_cached(str(weights_path), cfg.app.device)
+        except Exception as exc:
+            st.error(f"Ошибка загрузки модели: {exc}")
+            st.stop()
+
+        # ── Инференс + поиск ──────────────────────────────────────────────
+        with st.spinner("Вычисляется эмбеддинг..."):
+            query_vec: np.ndarray = embedder.embed([crop])
+
+        with st.spinner(f"Поиск топ-{top_k}..."):
+            results: list[SearchResult] = faiss_index.search(query_vec, top_k)
+
+        st.session_state.retrieval_results = results
+        st.toast(f"✅ Найдено {len(results)} результатов", icon="🎉")
+
+        # ── Отображение результатов ───────────────────────────────────────
+        self._render_results_grid(results, bucket)
+
+        st.markdown("---")
+        st.caption(
+            "💡 **Подсказки:** Загрузите изображение → нарисуйте рамку → "
+            "нажмите Найти → выберите результаты → экспорт в CVAT"
         )
-        st.stop()
 
-    crop_result = render_crop_selector(cfg.app)
-    if crop_result is None:
-        st.stop()
-    _full_image, crop = crop_result
 
-    st.divider()
-    if not st.button("🔍 Найти", type="primary", use_container_width=False):
-        st.stop()
+# ============================================================================
+# Точка входа страницы
+# ============================================================================
 
-    # Параметры S3 для скачивания s3://-чекпоинтов
-    s3_bucket_str = cfg.s3.bucket if cfg.s3 else ""
-    s3_region_str = cfg.s3.region if cfg.s3 else "us-east-1"
-    s3_endpoint_str = (cfg.s3.endpoint_url or "") if cfg.s3 else ""
-    cache_dir_str = (
-        str(cfg.encoder.cache_dir)
-        if cfg.encoder and cfg.encoder.cache_dir
-        else ""
-    )
 
-    try:
-        embedder = _load_embedder(
-            checkpoint=model_input,
-            device=cfg.app.device,
-            s3_bucket=s3_bucket_str,
-            s3_region=s3_region_str,
-            s3_endpoint_url=s3_endpoint_str,
-            cache_dir_str=cache_dir_str,
-        )
-    except FileNotFoundError as exc:
-        st.error(f"Чекпоинт модели не найден: {exc}", icon="🚫")
-        st.stop()
-    except (ValueError, RuntimeError) as exc:
-        st.error(f"Ошибка загрузки модели: {exc}", icon="🚫")
-        st.stop()
+def app(configuration: Configuration, config_path: str) -> None:
+    """Entry point ✨
 
-    with st.spinner("Вычисляется эмбеддинг..."):
-        query_vec: np.ndarray = embedder.embed([crop])
+    Вызывается из ``app.py`` по соглашению
+    ``selected_page_class_or_module.app(config, st.session_state.config_file)``.
 
-    dataset_meta, faiss_index = registry.get(dataset_name)
-    with st.spinner(f"Поиск топ-{top_k} в «{dataset_name}»..."):
-        search_results = faiss_index.search(query_vec, top_k)
-
-    render_results(search_results, dataset_meta.images_root, cfg.app, s3_client)
-
-    if cfg.cvat is not None:
-        render_cvat_exporter(
-            all_results=search_results,
-            images_root=dataset_meta.images_root,
-            cvat_config=cfg.cvat,
-            s3_client=s3_client,
-        )
+    Args:
+        configuration: Конфигурация приложения.
+        config_path: Имя/путь конфигурационного файла.
+    """
+    ImageRetriever(configuration, config_path).run()

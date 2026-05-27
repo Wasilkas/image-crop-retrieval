@@ -77,6 +77,7 @@ class AppBlock(BaseModel):
     canvas_width: int = 800
     canvas_height: int = 600
     results_columns: int = 3
+    buckets: list[str] = Field(default_factory=list)
 
     @field_validator("datasets_dir", mode="before")
     @classmethod
@@ -157,12 +158,13 @@ class CVATBlock(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    url: str
+    url: str = ""
     token: str | None = None
     username: str | None = None
     password: str | None = None
     project_id: int | None = None
     task_label: str = "crop"
+    cvat_name: str = "sip"
 
     @field_validator("url", mode="before")
     @classmethod

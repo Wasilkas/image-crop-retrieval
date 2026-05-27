@@ -88,6 +88,8 @@ module = [
     "respx",
     "consul",
     "consul.*",
+    "cveta",
+    "cveta.*",
 ]
 ignore_missing_imports = true
 
